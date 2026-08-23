@@ -57,12 +57,18 @@ export const STAGES = {
     width: 14, height: 14, wrap: true,
     goldenEvery: 6, goldenGrowth: 3,
     obstacles: [30,31,44,45, 38,39,52,53, 142,143,156,157, 150,151,164,165],
-    // Two movers patrolling open lanes, withdrawing at 85% fill.
+    // Chosen by tools/search-movers.js over route x speed x count x despawn.
+    // Nothing in that sweep completes on EVERY seed — a solid mover parked on
+    // the Hamiltonian cycle can remove the only legal move, and the cycle is the
+    // completion guarantee. This pair is the most lethal configuration that
+    // still completes on a usable share of seeds; tools/verify.js picks the
+    // seeds that do, and make-episode.js re-gates the exact seed before filming.
     movers: [
-      { path: [7, 21, 35, 49, 63, 77, 91, 77, 63, 49, 35, 21], phase: 0 },
-      { path: [188, 174, 160, 146, 132, 118, 104, 118, 132, 146, 160, 174], phase: 4 },
+      { path: [21, 35, 49, 35], phase: 0 },
+      { path: [21, 35, 49, 35], phase: 2 },
     ],
-    moverDespawnFill: 0.85,
+    moverDespawnFill: 0.5,
+    minCompleteRate: 0.15,   // measured ~26% on the chosen configuration
     speed: { baseMs: 90, minMs: 46, rampPerApple: 0.35 },
     blockedBlocks: [8, 12, 36, 40],
     guarantee: 'empirical',

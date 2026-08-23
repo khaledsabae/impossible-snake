@@ -88,10 +88,23 @@ export class Game {
   wouldDie(cell) {
     if (cell < 0) return 'wall';
     if (this.obstacles.has(cell)) return 'obstacle';
-    // Movers are evaluated at the tick we are about to enter.
+    // A mover kills the HEAD in two ways, and checking only the first lets the
+    // player walk straight through it:
+    //   1. it occupies the destination on the tick we arrive, and
+    //   2. it was ON the destination and steps into the cell we are leaving —
+    //      the two swap places and pass through each other.
+    // Movers glide over the body harmlessly: a mover walking into the snake
+    // would kill it through no choice of its own, which is both unfair and
+    // impossible for the solver to guarantee around.
     if (!this.moversGone) {
       for (const m of this.movers) {
-        if (m.path[(this.tick + 1 + m.phase) % m.path.length] === cell) return 'mover';
+        const now = m.path[(this.tick + m.phase) % m.path.length];
+        const next = m.path[(this.tick + 1 + m.phase) % m.path.length];
+        // BOTH cells are lethal. Blocking only `next` left the cell the player
+        // can actually SEE the block sitting in wide open, so the head walked
+        // straight through it — measured at 0 blocks in 2400 checks. A moving
+        // obstacle has to occupy the square it is drawn on.
+        if (now === cell || next === cell) return 'mover';
       }
     }
     if (this.body.has(cell)) {
