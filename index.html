@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta property="og:title" content="الثعبان المستحيل">
+<meta property="og:description" content="خمس مراحل. اللي يملأ اللوحة كاملة يبعت لقطة الشاشة.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Crect x='5' y='6' width='16' height='5' rx='2.5' fill='%233ddc84'/%3E%3Crect x='16' y='6' width='5' height='16' rx='2.5' fill='%233ddc84'/%3E%3Crect x='9' y='17' width='12' height='5' rx='2.5' fill='%233ddc84'/%3E%3Ccircle cx='8' cy='26' r='3' fill='%23ff4d5a'/%3E%3C/svg%3E">
+<title>الثعبان المستحيل</title>
+<style>
+  :root{--bg:#0b0f14;--panel:#111823;--text:#e8eff7;--muted:#7c8b9e;--accent:#3ddc84;--gold:#ffc93c}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:ui-sans-serif,system-ui,"Segoe UI",sans-serif;overscroll-behavior:none;touch-action:none}
+  body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:12px}
+  canvas{max-width:100%;max-height:74vh;border-radius:14px;touch-action:none}
+  #stages{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+  button{font:inherit;font-size:14px;padding:9px 14px;border-radius:10px;border:1px solid #223046;
+    background:var(--panel);color:var(--muted);cursor:pointer;transition:.15s}
+  button:hover{border-color:#31405a;color:var(--text)}
+  button[aria-pressed=true]{background:var(--accent);color:#06110b;border-color:var(--accent);font-weight:700}
+  #best{font:600 13px ui-monospace,monospace;color:var(--muted)}
+  #over{position:fixed;inset:0;display:none;place-items:center;background:rgba(11,15,20,.9);z-index:5}
+  #over.on{display:grid}
+  #card{background:var(--panel);border:1px solid #223046;border-radius:18px;padding:26px 30px;
+    text-align:center;max-width:min(92vw,420px)}
+  #card h2{margin:0 0 6px;font-size:20px}
+  #pct{font:800 52px ui-monospace,monospace;color:var(--accent);margin:8px 0}
+  #card p{color:var(--muted);font-size:14px;line-height:1.7;margin:10px 0 18px}
+  kbd{background:#0b1220;border:1px solid #223046;border-radius:6px;padding:1px 6px;font:12px ui-monospace,monospace}
+</style>
+<body>
+  <div id="stages"></div>
+  <canvas id="c" width="760" height="1000"></canvas>
+  <div id="best"></div>
+  <div id="over"><div id="card">
+    <h2 id="verdict"></h2>
+    <div id="pct"></div>
+    <p id="note"></p>
+    <button id="again">تاني</button>
+  </div></div>
+
+<script type="module">
+import { Game } from './core/game.js';
+import { STAGES, buildStage } from './core/stages.js';
+import { Painter } from './render/renderer.js';
+
+const canvas = document.getElementById('c');
+const painter0 = null;
+let stageId = Number(localStorage.getItem('si.stage') || 1);
+let game, painter, prev, lastTickAt, tickMs, queued = [], running = false, raf = 0;
+const lamps = { up: 0, right: 0, down: 0, left: 0 };
+const DIRNAME = ['up', 'right', 'down', 'left'];
+
+function fit() {
+  const w = Math.min(760, window.innerWidth - 24);
+  canvas.width = w; canvas.height = Math.round(w * 1.32);
+}
+
+function speedFor(g, stage) {
+  const s = stage.speed;
+  return Math.max(s.minMs, s.baseMs - g.applesEaten * s.rampPerApple);
+}
+
+function start(id) {
+  stageId = id;
+  localStorage.setItem('si.stage', String(id));
+  const { stage } = buildStage(id);
+  // Same engine, same ruleset object, same speed curve as the recorded run.
+  // A random seed only changes where the apples land.
+  game = new Game(stage, (Math.random() * 1e9) | 0);
+  game.__stage = stage;
+  painter = new Painter(canvas, { ...stage, capacity: game.capacity, title: stage.title, rule: stage.rule });
+  prev = game.snake.slice();
+  tickMs = speedFor(game, stage);
+  lastTickAt = performance.now();
+  queued = [];
+  running = true;
+  document.getElementById('over').classList.remove('on');
+  paintStages();
+  showBest();
+  cancelAnimationFrame(raf);
+  loop();
+}
+
+function loop() {
+  raf = requestAnimationFrame(loop);
+  const now = performance.now();
+  if (running && now - lastTickAt >= tickMs) {
+    prev = game.snake.slice();
+    const d = queued.length ? queued.shift() : game.dir;
+    game.step(d);
+    lastTickAt = now;
+    tickMs = speedFor(game, game.__stage);
+    if (!game.alive || game.fullAtTick !== null) finish();
+  }
+  const f = running ? Math.min(1, (now - lastTickAt) / tickMs) : 1;
+  for (const k of Object.keys(lamps)) lamps[k] = Math.max(0, lamps[k] - 0.045);
+  painter.paint({
+    base: prev, target: game.snake, f,
+    apple: { cell: game.apple, golden: game.appleGolden },
+    tick: Math.max(0, game.tick - 1), moversGone: game.moversGone,
+    len: game.snake.length, ms: now, keyLights: lamps,
+  });
+}
+
+function finish() {
+  running = false;
+  const pct = game.snake.length / game.capacity;
+  const key = `si.best.${stageId}`;
+  const best = Math.max(Number(localStorage.getItem(key) || 0), pct);
+  localStorage.setItem(key, String(best));
+  const won = game.fullAtTick !== null;
+  document.getElementById('verdict').textContent = won ? 'ملأت اللوحة كاملة' : 'خلصت';
+  document.getElementById('pct').textContent = `${(pct * 100).toFixed(1)}%`;
+  document.getElementById('note').innerHTML = won
+    ? 'لو وصلت هنا بإيدك، ابعتلنا لقطة الشاشة.'
+    : `الطول \u2066${game.snake.length}\u2069 من \u2066${game.capacity}\u2069. أحسن نتيجة ليك في المرحلة دي: <b>\u2066${(best * 100).toFixed(1)}%\u2069</b>`;
+  document.getElementById('over').classList.add('on');
+  showBest();
+}
+
+function showBest() {
+  const b = Number(localStorage.getItem(`si.best.${stageId}`) || 0);
+  document.getElementById('best').textContent =
+    `أحسن نتيجة ليك: \u2066${(b * 100).toFixed(1)}%\u2069  ·  ${STAGES[stageId].rule}`;
+}
+
+function paintStages() {
+  const host = document.getElementById('stages');
+  host.innerHTML = '';
+  for (const id of Object.keys(STAGES).map(Number)) {
+    const b = document.createElement('button');
+    b.textContent = `${id}. ${STAGES[id].title}`;
+    b.setAttribute('aria-pressed', String(id === stageId));
+    b.onclick = () => start(id);
+    host.appendChild(b);
+  }
+}
+
+const KEYMAP = {
+  ArrowUp: 0, ArrowRight: 1, ArrowDown: 2, ArrowLeft: 3,
+  w: 0, d: 1, s: 2, a: 3, W: 0, D: 1, S: 2, A: 3,
+};
+addEventListener('keydown', (e) => {
+  const d = KEYMAP[e.key];
+  if (d === undefined) return;
+  e.preventDefault();
+  lamps[DIRNAME[d]] = 1;
+  if (queued.length < 2) queued.push(d);
+});
+
+let touch = null;
+canvas.addEventListener('touchstart', (e) => { touch = e.changedTouches[0]; }, { passive: true });
+canvas.addEventListener('touchend', (e) => {
+  if (!touch) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touch.clientX, dy = t.clientY - touch.clientY;
+  if (Math.hypot(dx, dy) < 24) return;
+  const d = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0);
+  lamps[DIRNAME[d]] = 1;
+  if (queued.length < 2) queued.push(d);
+}, { passive: true });
+
+document.getElementById('again').onclick = () => start(stageId);
+addEventListener('resize', () => { fit(); });
+fit();
+start(stageId);
+</script>
+</body>
+</html>
