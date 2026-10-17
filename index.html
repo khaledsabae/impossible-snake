@@ -1,13 +1,13 @@
 <!doctype html>
-<html lang="ar" dir="rtl">
+<html lang="en" dir="ltr">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta property="og:title" content="الثعبان المستحيل">
-<meta property="og:description" content="خمس مراحل. اللي يملأ اللوحة كاملة يبعت لقطة الشاشة.">
+<meta property="og:title" content="Impossible Snake">
+<meta property="og:description" content="Five stages. Same rules and speed as the videos. Can you reach 100%?">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Crect x='5' y='6' width='16' height='5' rx='2.5' fill='%233ddc84'/%3E%3Crect x='16' y='6' width='5' height='16' rx='2.5' fill='%233ddc84'/%3E%3Crect x='9' y='17' width='12' height='5' rx='2.5' fill='%233ddc84'/%3E%3Ccircle cx='8' cy='26' r='3' fill='%23ff4d5a'/%3E%3C/svg%3E">
-<title>الثعبان المستحيل</title>
+<title>Impossible Snake</title>
 <style>
   :root{--bg:#0b0f14;--panel:#111823;--text:#e8eff7;--muted:#7c8b9e;--accent:#3ddc84;--gold:#ffc93c}
   *{box-sizing:border-box}
@@ -38,7 +38,7 @@
     <h2 id="verdict"></h2>
     <div id="pct"></div>
     <p id="note"></p>
-    <button id="again">تاني</button>
+    <button id="again">Play Again</button>
   </div></div>
 
 <script type="module">
@@ -47,7 +47,6 @@ import { STAGES, buildStage } from './core/stages.js';
 import { Painter } from './render/renderer.js';
 
 const canvas = document.getElementById('c');
-const painter0 = null;
 let stageId = Number(localStorage.getItem('si.stage') || 1);
 let game, painter, prev, lastTickAt, tickMs, queued = [], running = false, raf = 0;
 const lamps = { up: 0, right: 0, down: 0, left: 0 };
@@ -112,11 +111,11 @@ function finish() {
   const best = Math.max(Number(localStorage.getItem(key) || 0), pct);
   localStorage.setItem(key, String(best));
   const won = game.fullAtTick !== null;
-  document.getElementById('verdict').textContent = won ? 'ملأت اللوحة كاملة' : 'خلصت';
+  document.getElementById('verdict').textContent = won ? '100% BOARD COMPLETE' : 'RUN ENDED';
   document.getElementById('pct').textContent = `${(pct * 100).toFixed(1)}%`;
   document.getElementById('note').innerHTML = won
-    ? 'لو وصلت هنا بإيدك، ابعتلنا لقطة الشاشة.'
-    : `الطول \u2066${game.snake.length}\u2069 من \u2066${game.capacity}\u2069. أحسن نتيجة ليك في المرحلة دي: <b>\u2066${(best * 100).toFixed(1)}%\u2069</b>`;
+    ? 'If you completed this by hand, send us the screenshot.'
+    : `Length ${game.snake.length} / ${game.capacity}. Personal best on this stage: <b>${(best * 100).toFixed(1)}%</b>`;
   document.getElementById('over').classList.add('on');
   showBest();
 }
@@ -124,7 +123,7 @@ function finish() {
 function showBest() {
   const b = Number(localStorage.getItem(`si.best.${stageId}`) || 0);
   document.getElementById('best').textContent =
-    `أحسن نتيجة ليك: \u2066${(b * 100).toFixed(1)}%\u2069  ·  ${STAGES[stageId].rule}`;
+    `Personal Best: ${(b * 100).toFixed(1)}%  ·  ${STAGES[stageId].rule}`;
 }
 
 function paintStages() {
@@ -132,7 +131,7 @@ function paintStages() {
   host.innerHTML = '';
   for (const id of Object.keys(STAGES).map(Number)) {
     const b = document.createElement('button');
-    b.textContent = `${id}. ${STAGES[id].title}`;
+    b.textContent = STAGES[id].title;
     b.setAttribute('aria-pressed', String(id === stageId));
     b.onclick = () => start(id);
     host.appendChild(b);

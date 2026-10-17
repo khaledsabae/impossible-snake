@@ -15,6 +15,14 @@ export const THEME = {
   text: '#e8eff7', muted: '#7c8b9e', accent: '#3ddc84',
 };
 
+export const STAGE_THEMES = {
+  1: { snakeA: '#3ddc84', snakeB: '#159f5e', head: '#a8f5c8', accent: '#3ddc84', apple: '#ff4d5a' },
+  2: { snakeA: '#00e5ff', snakeB: '#0077c2', head: '#b8ffff', accent: '#00e5ff', apple: '#ff4d5a' },
+  3: { snakeA: '#ffab00', snakeB: '#e65100', head: '#ffe57f', accent: '#ffab00', apple: '#ff4081' },
+  4: { snakeA: '#ff5252', snakeB: '#b71c1c', head: '#ffcdd2', accent: '#ff5252', apple: '#00e676' },
+  5: { snakeA: '#e040fb', snakeB: '#6a1b9a', head: '#f3b8ff', accent: '#e040fb', apple: '#ff4d5a', mover: '#00e5ff' },
+};
+
 export function stageFromLog(log) {
   return {
     width: log.width, height: log.height, wrap: log.wrap,
@@ -27,11 +35,13 @@ export function stageFromLog(log) {
 export const NO_KEYS = { up: 0, right: 0, down: 0, left: 0 };
 
 export class Painter {
-  /** @param meta {width,height,obstacles,movers,capacity,title,rule} */
+  /** @param meta {width,height,obstacles,movers,capacity,title,rule,stage,id} */
   constructor(canvas, meta) {
     this.c = canvas;
     this.ctx = canvas.getContext('2d');
     this.m = meta;
+    const stageId = meta.stage || meta.id || 1;
+    this.theme = { ...THEME, ...(STAGE_THEMES[stageId] || {}) };
   }
 
   /** @param frame {base,target,f,apple,tick,moversGone,len,ms,keyLights,banner} */
@@ -41,16 +51,21 @@ export class Painter {
     // Canvas text direction defaults to "inherit". On the RTL web page that flips
     // "3 / 100" into "100 / 3". Pin it so the readout is identical everywhere.
     ctx.direction = 'ltr';
-    ctx.fillStyle = THEME.bg;
+    ctx.fillStyle = this.theme.bg;
     ctx.fillRect(0, 0, L.W, L.H);
     this.drawBoard(L);
     this.drawObstacles(L);
-    if (!frame.moversGone) this.drawMovers(L, frame.tick, frame.f);
+    if ((this.m.movers || []).length) this.drawMovers(L, frame.tick, frame.f, frame.moversGone);
     if (frame.apple && frame.apple.cell >= 0) this.drawApple(L, frame.apple, frame.ms);
     this.drawSnake(L, frame.base, frame.target, frame.f);
-    this.drawHud(L, frame.len, frame.ms);
+    const hookActive = Boolean(
+      (frame.hook && frame.ms <= frame.hook.untilMs) ||
+      (frame.endHook && frame.ms >= frame.endHook.fromMs)
+    );
+    this.drawHud(L, frame.len, frame.ms, hookActive);
     this.drawKeys(L, frame.keyLights || NO_KEYS);
     if (frame.hook) this.drawHook(L, frame.hook, frame.ms);
+    if (frame.endHook) this.drawEndHook(L, frame.endHook, frame.ms);
     if (frame.banner) this.drawBanner(L, frame.banner);
   }
 
@@ -59,11 +74,11 @@ export class Painter {
     const vertical = H > W * 1.2;
     const pad = Math.round(W * 0.055);
     const boardMax = vertical ? W - pad * 2 : Math.round(W * 0.62);
-    const size = Math.min(boardMax, Math.round(H * (vertical ? 0.56 : 0.82)));
+    const size = Math.min(boardMax, Math.round(H * (vertical ? 0.54 : 0.82)));
     return {
       W, H, vertical, pad, size, cell: size / this.m.width,
       bx: vertical ? Math.round((W - size) / 2) : Math.round(W * 0.06),
-      by: vertical ? Math.round(H * 0.20) : Math.round((H - size) / 2),
+      by: vertical ? Math.round(H * 0.235) : Math.round((H - size) / 2),
     };
   }
 
@@ -72,9 +87,9 @@ export class Painter {
 
   drawBoard(L) {
     const { ctx } = this;
-    ctx.fillStyle = THEME.board;
+    ctx.fillStyle = this.theme.board;
     ctx.beginPath(); ctx.roundRect(L.bx, L.by, L.size, L.size, L.cell * 0.35); ctx.fill();
-    ctx.strokeStyle = THEME.grid; ctx.lineWidth = Math.max(1, L.cell * 0.03);
+    ctx.strokeStyle = this.theme.grid; ctx.lineWidth = Math.max(1, L.cell * 0.03);
     for (let k = 1; k < this.m.width; k++) {
       ctx.beginPath(); ctx.moveTo(L.bx + k * L.cell, L.by); ctx.lineTo(L.bx + k * L.cell, L.by + L.size); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(L.bx, L.by + k * L.cell); ctx.lineTo(L.bx + L.size, L.by + k * L.cell); ctx.stroke();
@@ -85,12 +100,12 @@ export class Painter {
     const { ctx } = this;
     for (const o of this.m.obstacles || []) {
       const x = L.bx + (o % this.m.width) * L.cell, y = L.by + ((o / this.m.width) | 0) * L.cell;
-      ctx.fillStyle = THEME.obstacle;
+      ctx.fillStyle = this.theme.obstacle;
       ctx.beginPath(); ctx.roundRect(x + L.cell * 0.06, y + L.cell * 0.06, L.cell * 0.88, L.cell * 0.88, L.cell * 0.18); ctx.fill();
     }
   }
 
-  drawMovers(L, tick, f) {
+  drawMovers(L, tick, f, phased = false) {
     const { ctx } = this;
     for (const m of this.m.movers || []) {
       const a = m.path[(tick + m.phase) % m.path.length];
@@ -98,8 +113,9 @@ export class Painter {
       const x = this.cx(L, a) + (this.cx(L, b) - this.cx(L, a)) * f;
       const y = this.cy(L, a) + (this.cy(L, b) - this.cy(L, a)) * f;
       ctx.save();
-      ctx.shadowColor = THEME.mover; ctx.shadowBlur = L.cell * 0.7;
-      ctx.fillStyle = THEME.mover;
+      ctx.globalAlpha = phased ? 0.38 : 1;
+      ctx.shadowColor = this.theme.mover; ctx.shadowBlur = L.cell * 0.7;
+      ctx.fillStyle = this.theme.mover;
       ctx.beginPath(); ctx.roundRect(x - L.cell * 0.42, y - L.cell * 0.42, L.cell * 0.84, L.cell * 0.84, L.cell * 0.22); ctx.fill();
       ctx.restore();
     }
@@ -109,9 +125,9 @@ export class Painter {
     const { ctx } = this;
     const r = L.cell * 0.34 * (1 + Math.sin(ms / 180) * 0.06);
     ctx.save();
-    ctx.shadowColor = apple.golden ? THEME.golden : THEME.apple;
+    ctx.shadowColor = apple.golden ? this.theme.golden : this.theme.apple;
     ctx.shadowBlur = L.cell * (apple.golden ? 1.4 : 0.8);
-    ctx.fillStyle = apple.golden ? THEME.golden : THEME.apple;
+    ctx.fillStyle = apple.golden ? this.theme.golden : this.theme.apple;
     ctx.beginPath(); ctx.arc(this.cx(L, apple.cell), this.cy(L, apple.cell), r, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
@@ -131,7 +147,7 @@ export class Painter {
       return (Math.abs(ax - bx) === 1 && ay === by) || (Math.abs(ay - by) === 1 && ax === bx);
     };
     const grad = ctx.createLinearGradient(L.bx, L.by, L.bx + L.size, L.by + L.size);
-    grad.addColorStop(0, THEME.snakeA); grad.addColorStop(1, THEME.snakeB);
+    grad.addColorStop(0, this.theme.snakeA); grad.addColorStop(1, this.theme.snakeB);
     ctx.fillStyle = grad;
 
     const cellRect = (cell) => {
@@ -200,8 +216,8 @@ export class Painter {
       ctx.fill();
     };
     ctx.save();
-    ctx.shadowColor = THEME.head; ctx.shadowBlur = L.cell * 0.9;
-    ctx.fillStyle = THEME.head;
+    ctx.shadowColor = this.theme.head; ctx.shadowBlur = L.cell * 0.9;
+    ctx.fillStyle = this.theme.head;
     const wpHead = adjacent(from, to) ? null : wrapPair(from, to);
     if (wpHead) {
       // Slide out one edge and in from the other, clipped to the board, instead
@@ -223,10 +239,10 @@ export class Painter {
     ctx.restore();
   }
 
-  drawHud(L, len, ms) {
+  drawHud(L, len, ms, hookActive = false) {
     const { ctx } = this;
     const pct = len / this.m.capacity;
-    const topY = L.vertical ? Math.round(L.H * 0.085) : Math.round(L.H * 0.16);
+    const topY = L.vertical ? Math.round(L.H * 0.132) : Math.round(L.H * 0.16);
     const panel = L.W - L.bx - L.size;
     const cxm = L.vertical ? L.W / 2 : L.bx + L.size + Math.round(panel / 2);
     // Scale off the panel it actually has to fit inside — a fixed fraction of the
@@ -234,26 +250,34 @@ export class Painter {
     const unit = L.vertical ? L.W : panel;
 
     ctx.textAlign = 'center';
-    ctx.fillStyle = THEME.muted;
-    ctx.font = `500 ${Math.round(unit * 0.028)}px ui-sans-serif, system-ui, sans-serif`;
-    if (this.m.title) ctx.fillText(`${this.m.title}  ·  ${this.m.rule || ''}`, cxm, topY - Math.round(unit * 0.045));
+    ctx.fillStyle = this.theme.muted;
+    ctx.font = `700 ${Math.round(unit * 0.026)}px ui-sans-serif, system-ui, sans-serif`;
+    if (this.m.title) ctx.fillText(`${this.m.title}  ·  ${(this.m.rule || '').toUpperCase()}`, cxm, topY - Math.round(unit * 0.042));
 
-    ctx.fillStyle = THEME.text;
-    ctx.font = `800 ${Math.round(unit * 0.105)}px ui-monospace, SFMono-Regular, monospace`;
-    ctx.fillText(`${len} / ${this.m.capacity}`, cxm, topY + Math.round(unit * 0.04));
+    ctx.fillStyle = this.theme.text;
+    ctx.font = `800 ${Math.round(unit * 0.100)}px ui-monospace, SFMono-Regular, monospace`;
+    ctx.fillText(`${len} / ${this.m.capacity}`, cxm, topY + Math.round(unit * 0.038));
+
+    if (!hookActive && L.vertical) {
+      const left = Math.max(0, this.m.capacity - len);
+      const y = L.by - Math.round(unit * 0.032);
+      ctx.fillStyle = left === 0 ? this.theme.golden : this.theme.accent;
+      ctx.font = `800 ${Math.round(unit * 0.040)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.fillText(left === 0 ? '100% COMPLETE · HUMAN OR BOT?' : `${left} SQUARES LEFT · HUMAN OR BOT?`, cxm, y);
+    }
 
     const bw = L.vertical ? L.size : Math.round(unit * 0.9);
     const bx = L.vertical ? L.bx : cxm - bw / 2;
-    const by = L.vertical ? L.by + L.size + Math.round(L.cell * 0.9) : topY + Math.round(unit * 0.11);
+    const by = L.vertical ? L.by + L.size + Math.round(L.cell * 0.75) : topY + Math.round(unit * 0.11);
     const bh = Math.max(6, (L.vertical ? L.cell : unit * 0.02) * (L.vertical ? 0.18 : 1));
-    ctx.fillStyle = THEME.panel;
+    ctx.fillStyle = this.theme.panel;
     ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, bh / 2); ctx.fill();
-    ctx.fillStyle = pct >= 1 ? THEME.golden : THEME.accent;
+    ctx.fillStyle = pct >= 1 ? this.theme.golden : this.theme.accent;
     ctx.beginPath(); ctx.roundRect(bx, by, Math.max(bh, bw * pct), bh, bh / 2); ctx.fill();
 
-    ctx.fillStyle = pct >= 1 ? THEME.golden : THEME.muted;
+    ctx.fillStyle = pct >= 1 ? this.theme.golden : this.theme.muted;
     ctx.font = `700 ${Math.round(unit * 0.032)}px ui-monospace, monospace`;
-    ctx.fillText(`${(pct * 100).toFixed(1)}%`, cxm, by + bh + Math.round(unit * 0.05));
+    ctx.fillText(`${(pct * 100).toFixed(1)}%`, cxm, by + bh + Math.round(unit * 0.048));
   }
 
   /** Keystroke overlay. Lamp levels are supplied by the caller. */
@@ -269,14 +293,14 @@ export class Painter {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (const nm of ['up', 'left', 'down', 'right']) {
       const [x, y] = at[nm], a = lit[nm] || 0;
-      ctx.fillStyle = THEME.panel;
+      ctx.fillStyle = this.theme.panel;
       ctx.beginPath(); ctx.roundRect(x - k / 2, y - k / 2, k, k, k * 0.24); ctx.fill();
       if (a > 0) {
-        ctx.save(); ctx.globalAlpha = a; ctx.shadowColor = THEME.accent; ctx.shadowBlur = k * 0.5;
-        ctx.fillStyle = THEME.accent;
+        ctx.save(); ctx.globalAlpha = a; ctx.shadowColor = this.theme.accent; ctx.shadowBlur = k * 0.5;
+        ctx.fillStyle = this.theme.accent;
         ctx.beginPath(); ctx.roundRect(x - k / 2, y - k / 2, k, k, k * 0.24); ctx.fill(); ctx.restore();
       }
-      ctx.fillStyle = a > 0.35 ? THEME.bg : THEME.muted;
+      ctx.fillStyle = a > 0.35 ? this.theme.bg : this.theme.muted;
       ctx.font = `${Math.round(k * 0.42)}px ui-sans-serif, system-ui, sans-serif`;
       ctx.fillText(glyph[nm], x, y + 1);
     }
@@ -294,16 +318,39 @@ export class Painter {
     const { ctx } = this;
     const unit = L.vertical ? L.W : L.W - L.bx - L.size;
     const cxm = L.vertical ? L.W / 2 : L.bx + L.size + Math.round(unit / 2);
-    const y = L.vertical ? L.by - Math.round(unit * 0.072) : Math.round(L.H * 0.45);
+    const y = L.vertical ? L.by - Math.round(unit * 0.062) : Math.round(L.H * 0.45);
     ctx.save();
     ctx.globalAlpha = fade;
     ctx.textAlign = 'center';
-    ctx.fillStyle = THEME.text;
-    ctx.font = `800 ${Math.round(unit * 0.060)}px ui-sans-serif, system-ui, sans-serif`;
-    if (hook.ar) ctx.fillText(hook.ar, cxm, y);
-    ctx.fillStyle = THEME.accent;
-    ctx.font = `700 ${Math.round(unit * 0.038)}px ui-sans-serif, system-ui, sans-serif`;
-    if (hook.en) ctx.fillText(hook.en, cxm, y + Math.round(unit * 0.050));
+    ctx.fillStyle = this.theme.text;
+    ctx.font = `800 ${Math.round(unit * 0.056)}px ui-sans-serif, system-ui, sans-serif`;
+    if (hook.en) ctx.fillText(hook.en, cxm, y);
+    ctx.fillStyle = this.theme.accent;
+    ctx.font = `700 ${Math.round(unit * 0.032)}px ui-sans-serif, system-ui, sans-serif`;
+    if (hook.sub) ctx.fillText(hook.sub, cxm, y + Math.round(unit * 0.042));
+    ctx.restore();
+  }
+
+  /**
+   * End-of-loop call to action / engagement question ("Human or bot?").
+   * Fades in during the hold after the board closes to invite comments.
+   */
+  drawEndHook(L, endHook, ms) {
+    if (ms < endHook.fromMs) return;
+    const fade = Math.min(1, (ms - endHook.fromMs) / 300);
+    const { ctx } = this;
+    const unit = L.vertical ? L.W : L.W - L.bx - L.size;
+    const cxm = L.vertical ? L.W / 2 : L.bx + L.size + Math.round(unit / 2);
+    const y = L.vertical ? L.by - Math.round(unit * 0.062) : Math.round(L.H * 0.45);
+    ctx.save();
+    ctx.globalAlpha = fade;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = this.theme.text;
+    ctx.font = `800 ${Math.round(unit * 0.056)}px ui-sans-serif, system-ui, sans-serif`;
+    if (endHook.en) ctx.fillText(endHook.en, cxm, y);
+    ctx.fillStyle = this.theme.golden;
+    ctx.font = `700 ${Math.round(unit * 0.032)}px ui-sans-serif, system-ui, sans-serif`;
+    if (endHook.sub) ctx.fillText(endHook.sub, cxm, y + Math.round(unit * 0.042));
     ctx.restore();
   }
 
@@ -313,7 +360,7 @@ export class Painter {
     ctx.fillStyle = 'rgba(11,15,20,0.78)';
     ctx.fillRect(L.bx, L.by + L.size / 2 - L.size * 0.11, L.size, L.size * 0.22);
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = THEME.text;
+    ctx.fillStyle = this.theme.text;
     ctx.font = `800 ${Math.round(L.size * 0.075)}px ui-sans-serif, system-ui, sans-serif`;
     ctx.fillText(text, L.bx + L.size / 2, L.by + L.size / 2);
     ctx.restore();
@@ -372,6 +419,7 @@ export class Renderer {
       base, target: this.snaps[Math.min(i + 1, this.snaps.length - 1)], f,
       apple: this.apples[i], tick: i, moversGone: this.moversGone[i],
       len: base.length, ms, keyLights: this.keyLights(ms), hook: this.hook,
+      endHook: this.endHook,
     });
   }
 }
