@@ -208,8 +208,9 @@ function start(id, keepChallenge = false) {
   document.getElementById('copy-score').textContent = 'Copy Score for YouTube Comments 📋';
 
   const chEl = document.getElementById('challenge');
+  const chArena = stage.arenaName || (stage.obstacles?.length ? 'FOUR PILLARS' : 'CLASSIC GRID');
   if (lockedSeed !== null || lockedCycle !== null) {
-    chEl.textContent = `🎯 Video Challenge · ${stage.arenaName} · Seed #${runSeed}`;
+    chEl.textContent = `🎯 Video Challenge · ${chArena} · Seed #${runSeed}`;
     chEl.classList.add('on');
   } else {
     chEl.classList.remove('on');
@@ -265,7 +266,7 @@ function finish() {
   playEnd(won);
   document.getElementById('verdict').textContent = won ? '100% BOARD COMPLETE' : 'RUN ENDED';
   document.getElementById('pct').textContent = `${(pct * 100).toFixed(1)}%`;
-  const arenaLabel = game.__stage?.arenaName || STAGES[stageId].arenaName || 'CLASSIC';
+  const arenaLabel = game.__stage?.arenaName || STAGES[stageId]?.arenaName || (stageId >= 4 ? 'FOUR PILLARS' : 'CLASSIC GRID');
   document.getElementById('note').innerHTML = won
     ? `You conquered <b>${arenaLabel}</b> (${game.capacity}/${game.capacity} squares)! Copy your score and post it in the YouTube comments.`
     : `Length <b>${game.snake.length} / ${game.capacity}</b> on <b>${arenaLabel}</b>.<br>Personal best on Stage ${stageId}: <b>${(best * 100).toFixed(1)}%</b>`;
@@ -276,20 +277,22 @@ function finish() {
 
 function showBest() {
   const b = Number(localStorage.getItem(`si.best.${stageId}`) || 0);
-  const arenaLabel = game?.__stage?.arenaName || STAGES[stageId].arenaName || '';
+  const arenaLabel = game?.__stage?.arenaName || STAGES[stageId]?.arenaName || (stageId >= 4 ? 'FOUR PILLARS' : 'CLASSIC GRID');
   document.getElementById('best').textContent =
     `Personal Best: ${(b * 100).toFixed(1)}%  ·  ${arenaLabel}  ·  ${STAGES[stageId].rule}`;
 }
 
 const ARENA_STAGE = { donut: 6, hourglass: 7, skull: 8, chambers: 9 };
+const STAGE_EQUIV = { 6: 2, 7: 3, 8: 4, 9: 5 };
 
 function paintStages() {
   const host = document.getElementById('stages');
   host.innerHTML = '';
+  const activeTab = STAGE_EQUIV[stageId] || stageId;
   for (const id of [1, 2, 3, 4, 5]) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = (id === stageId && game?.__stage?.title) ? game.__stage.title : STAGES[id].title;
+    b.textContent = (id === activeTab && game?.__stage?.title) ? game.__stage.title : STAGES[id].title;
     b.setAttribute('aria-pressed', String(id === stageId && !arenaOverride));
     b.onclick = () => { arenaOverride = null; start(id, false); };
     host.appendChild(b);
@@ -299,7 +302,7 @@ function paintStages() {
 function paintArenas() {
   const host = document.getElementById('arenas');
   host.innerHTML = '';
-  const activeArena = arenaOverride || game?.__stage?.arena || STAGES[stageId].arena;
+  const activeArena = arenaOverride || game?.__stage?.arena || STAGES[stageId]?.arena || (stageId >= 4 ? 'pillars' : 'classic');
   for (const [k, def] of Object.entries(ARENAS)) {
     const b = document.createElement('button');
     b.type = 'button';
@@ -309,9 +312,15 @@ function paintArenas() {
       if (ARENA_STAGE[k]) {
         arenaOverride = null;
         start(ARENA_STAGE[k], false);
+      } else if (k === 'pillars') {
+        arenaOverride = (stageId === 4 || stageId === 5 || stageId > 5) ? null : 'pillars';
+        start((stageId > 5 || stageId < 4) ? 4 : stageId, false);
+      } else if (k === 'classic') {
+        arenaOverride = stageId <= 3 ? null : 'classic';
+        start(stageId > 5 ? 3 : stageId, false);
       } else {
         arenaOverride = k;
-        start(stageId > 5 ? (k === 'box' ? 4 : 3) : stageId, false);
+        start(stageId > 5 ? 3 : stageId, false);
       }
     };
     host.appendChild(b);

@@ -257,7 +257,8 @@ export function buildStage(id, cycleSeed, arenaKey) {
     const wrapX = base.wrap ? ((dx + w) % w === 1 ? 1 : (dx + w) % w === w - 1 ? -1 : dx) : dx;
     const wrapY = base.wrap ? ((dy + h) % h === 1 ? 1 : (dy + h) % h === h - 1 ? -1 : dy) : dy;
     const startDir = wrapX === 1 ? RIGHT : wrapX === -1 ? LEFT : wrapY === 1 ? DOWN : UP;
-    return { stage: { ...base, start: cycle[0], startDir }, cycle };
+    const arenaName = base.arenaName || (base.obstacles?.length ? 'FOUR PILLARS' : 'CLASSIC GRID');
+    return { stage: { ...base, arenaName, start: cycle[0], startDir }, cycle };
   }
 
   // Explicit V3 stage (6-9) or explicit arenaKey override:

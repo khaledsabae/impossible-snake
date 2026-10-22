@@ -340,11 +340,25 @@ export class Painter {
     }
     if (tailVacating && n >= 2) {
       const t = base[n - 1], into = base[n - 2];
+      const ix = this.cx(L, into), iy = this.cy(L, into);
       let tx = this.cx(L, t), ty = this.cy(L, t);
-      if (adjacent(t, into)) { tx += (this.cx(L, into) - tx) * f; ty += (this.cy(L, into) - ty) * f; }
-      ctx.beginPath();
-      ctx.roundRect(tx - L.cell * 0.42, ty - L.cell * 0.42, L.cell * 0.84, L.cell * 0.84, L.cell * 0.28);
-      ctx.fill();
+      if (adjacent(t, into)) {
+        tx += (ix - tx) * f;
+        ty += (iy - ty) * f;
+        ctx.beginPath();
+        ctx.roundRect(
+          Math.min(tx, ix) - L.cell * 0.42,
+          Math.min(ty, iy) - L.cell * 0.42,
+          Math.abs(tx - ix) + L.cell * 0.84,
+          Math.abs(ty - iy) + L.cell * 0.84,
+          L.cell * 0.28
+        );
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.roundRect(tx - L.cell * 0.42, ty - L.cell * 0.42, L.cell * 0.84, L.cell * 0.84, L.cell * 0.28);
+        ctx.fill();
+      }
     }
 
     // Golden/regular swallow wave travelling down the snake body
@@ -479,8 +493,25 @@ export class Painter {
         head(this.cx(L, to), this.cy(L, to) - (1 - f) * L.cell * wpHead.out);
       }
     } else {
-      let hx = this.cx(L, from), hy = this.cy(L, from);
-      if (adjacent(from, to)) { hx += (this.cx(L, to) - hx) * f; hy += (this.cy(L, to) - hy) * f; }
+      const fx = this.cx(L, from), fy = this.cy(L, from);
+      let hx = fx, hy = fy;
+      if (adjacent(from, to)) {
+        hx += (this.cx(L, to) - fx) * f;
+        hy += (this.cy(L, to) - fy) * f;
+        ctx.save();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.roundRect(
+          Math.min(fx, hx) - L.cell * 0.42,
+          Math.min(fy, hy) - L.cell * 0.42,
+          Math.abs(hx - fx) + L.cell * 0.84,
+          Math.abs(hy - fy) + L.cell * 0.84,
+          L.cell * 0.28
+        );
+        ctx.fill();
+        ctx.restore();
+      }
       head(hx, hy);
     }
     ctx.restore();
