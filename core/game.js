@@ -27,6 +27,11 @@ export class Game {
 
     this.obstacles = new Set(stage.obstacles || []);
     this.movers = (stage.movers || []).map((m) => ({ path: m.path.slice(), phase: m.phase | 0 }));
+    this.useMoverPockets = Boolean(stage.useMoverPockets || (stage.moverPockets && stage.moverPockets.length));
+    this.moverPockets = new Set(stage.moverPockets || []);
+    if (this.useMoverPockets) {
+      for (const m of this.movers) for (const c of m.path) this.moverPockets.add(c);
+    }
 
     // Movers withdraw once the board is this full — announced rule, and the
     // reason 100% stays reachable: a permanently-present mover would own a cell
@@ -88,22 +93,10 @@ export class Game {
   wouldDie(cell) {
     if (cell < 0) return 'wall';
     if (this.obstacles.has(cell)) return 'obstacle';
-    // A mover kills the HEAD in two ways, and checking only the first lets the
-    // player walk straight through it:
-    //   1. it occupies the destination on the tick we arrive, and
-    //   2. it was ON the destination and steps into the cell we are leaving —
-    //      the two swap places and pass through each other.
-    // Movers glide over the body harmlessly: a mover walking into the snake
-    // would kill it through no choice of its own, which is both unfair and
-    // impossible for the solver to guarantee around.
     if (!this.moversGone) {
       for (const m of this.movers) {
         const now = m.path[(this.tick + m.phase) % m.path.length];
         const next = m.path[(this.tick + 1 + m.phase) % m.path.length];
-        // BOTH cells are lethal. Blocking only `next` left the cell the player
-        // can actually SEE the block sitting in wide open, so the head walked
-        // straight through it — measured at 0 blocks in 2400 checks. A moving
-        // obstacle has to occupy the square it is drawn on.
         if (now === cell || next === cell) return 'mover';
       }
     }
@@ -131,9 +124,19 @@ export class Game {
   spawnApple() {
     const blocked = new Set(this.body);
     for (const o of this.obstacles) blocked.add(o);
-    for (const c of this.moverCells()) blocked.add(c);
+    if (this.useMoverPockets && !this.moversGone) {
+      for (const c of this.moverPockets) blocked.add(c);
+    } else {
+      for (const c of this.moverCells()) blocked.add(c);
+    }
     const free = [];
     for (let i = 0; i < this.n; i++) if (!blocked.has(i)) free.push(i);
+    if (free.length === 0 && this.useMoverPockets && !this.moversGone) {
+      const fallbackBlocked = new Set(this.body);
+      for (const o of this.obstacles) fallbackBlocked.add(o);
+      for (const c of this.moverCells()) fallbackBlocked.add(c);
+      for (let i = 0; i < this.n; i++) if (!fallbackBlocked.has(i)) free.push(i);
+    }
     if (free.length === 0) { this.apple = -1; this.appleGolden = false; return; }
 
     let golden = this.isGoldenNext();
@@ -185,9 +188,6 @@ export class Game {
     }
     if (this.fullAtTick === null && this.snake.length >= this.capacity) {
       this.fullAtTick = this.tick;
-      // On a full board a cycle-riding snake orbits forever, head locked one cell
-      // behind its own tail — that IS the ending shot, and it loops cleanly.
-      // 'win' ends the run the instant the board completes instead.
       if (this.endOnFull === 'win') { this.alive = false; this.deathCause = 'complete'; }
     }
     return { tick: this.tick, dir: d, died: false, ate, golden, length: this.snake.length, full: this.fullAtTick !== null };

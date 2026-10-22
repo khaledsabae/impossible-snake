@@ -21,12 +21,20 @@ export const STAGE_THEMES = {
   3: { snakeA: '#ffab00', snakeB: '#e65100', head: '#ffe57f', accent: '#ffab00', apple: '#ff4081' },
   4: { snakeA: '#ff5252', snakeB: '#b71c1c', head: '#ffcdd2', accent: '#ff5252', apple: '#00e676' },
   5: { snakeA: '#e040fb', snakeB: '#6a1b9a', head: '#f3b8ff', accent: '#e040fb', apple: '#ff4d5a', mover: '#00e5ff' },
+  6: { snakeA: '#00e5ff', snakeB: '#0077c2', head: '#b8ffff', accent: '#00e5ff', apple: '#ff4d5a' },
+  7: { snakeA: '#ffab00', snakeB: '#e65100', head: '#ffe57f', accent: '#ffab00', apple: '#ff4081' },
+  8: { snakeA: '#ff5252', snakeB: '#b71c1c', head: '#ffcdd2', accent: '#ff5252', apple: '#00e676', mover: '#ff8a3d' },
+  9: { snakeA: '#e040fb', snakeB: '#6a1b9a', head: '#f3b8ff', accent: '#e040fb', apple: '#ff4d5a', mover: '#00e5ff' },
 };
 
 export function stageFromLog(log) {
   return {
     width: log.width, height: log.height, wrap: log.wrap,
-    obstacles: log.obstacles, movers: log.movers, moverDespawnFill: log.moverDespawnFill,
+    arena: log.arena, arenaName: log.arenaName,
+    blockedBlocks: log.blockedBlocks,
+    obstacles: log.obstacles, movers: log.movers, moverPockets: log.moverPockets,
+    useMoverPockets: log.useMoverPockets,
+    moverDespawnFill: log.moverDespawnFill,
     goldenEvery: log.goldenEvery, goldenGrowth: log.goldenGrowth,
     start: log.start, startDir: log.startDir, startLength: log.startLength,
   };
@@ -35,16 +43,17 @@ export function stageFromLog(log) {
 export const NO_KEYS = { up: 0, right: 0, down: 0, left: 0 };
 
 export class Painter {
-  /** @param meta {width,height,obstacles,movers,capacity,title,rule,stage,id} */
+  /** @param meta {width,height,obstacles,movers,capacity,title,rule,stage,id,arenaName} */
   constructor(canvas, meta) {
     this.c = canvas;
     this.ctx = canvas.getContext('2d');
     this.m = meta;
     const stageId = meta.stage || meta.id || 1;
     this.theme = { ...THEME, ...(STAGE_THEMES[stageId] || {}) };
+    this._obsSet = new Set(meta.obstacles || []);
   }
 
-  /** @param frame {base,target,f,apple,tick,moversGone,len,ms,keyLights,banner} */
+  /** @param frame {base,target,f,apple,tick,moversGone,len,ms,keyLights,banner,eatEvents,fullMs,recentHeads} */
   paint(frame) {
     const { ctx } = this;
     const L = this.layout();
@@ -53,11 +62,16 @@ export class Painter {
     ctx.direction = 'ltr';
     ctx.fillStyle = this.theme.bg;
     ctx.fillRect(0, 0, L.W, L.H);
-    this.drawBoard(L);
+    const isFull = frame.len >= this.m.capacity;
+    this.drawBoard(L, isFull);
     this.drawObstacles(L);
-    if ((this.m.movers || []).length) this.drawMovers(L, frame.tick, frame.f, frame.moversGone);
+    if ((this.m.movers || []).length && !isFull) this.drawMovers(L, frame.tick, frame.f, frame.moversGone);
     if (frame.apple && frame.apple.cell >= 0) this.drawApple(L, frame.apple, frame.ms);
-    this.drawSnake(L, frame.base, frame.target, frame.f);
+    this.drawSnake(L, frame.base, frame.target, frame.f, frame);
+    if (frame.eatEvents && frame.eatEvents.length) this.drawParticles(L, frame.eatEvents, frame.ms);
+    if (frame.fullMs !== undefined && frame.fullMs !== null && frame.ms >= frame.fullMs) {
+      this.drawShockwave(L, frame.base?.[0] ?? 0, frame.ms - frame.fullMs);
+    }
     const hookActive = Boolean(
       (frame.hook && frame.ms <= frame.hook.untilMs) ||
       (frame.endHook && frame.ms >= frame.endHook.fromMs)
@@ -85,8 +99,9 @@ export class Painter {
   cx(L, cell) { return L.bx + ((cell % this.m.width) + 0.5) * L.cell; }
   cy(L, cell) { return L.by + (((cell / this.m.width) | 0) + 0.5) * L.cell; }
 
-  drawBoard(L) {
+  drawBoard(L, isFull = false) {
     const { ctx } = this;
+    ctx.save();
     ctx.fillStyle = this.theme.board;
     ctx.beginPath(); ctx.roundRect(L.bx, L.by, L.size, L.size, L.cell * 0.35); ctx.fill();
     ctx.strokeStyle = this.theme.grid; ctx.lineWidth = Math.max(1, L.cell * 0.03);
@@ -94,15 +109,48 @@ export class Painter {
       ctx.beginPath(); ctx.moveTo(L.bx + k * L.cell, L.by); ctx.lineTo(L.bx + k * L.cell, L.by + L.size); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(L.bx, L.by + k * L.cell); ctx.lineTo(L.bx + L.size, L.by + k * L.cell); ctx.stroke();
     }
+    ctx.strokeStyle = isFull ? this.theme.golden : this.theme.accent;
+    ctx.globalAlpha = isFull ? 0.75 : 0.28;
+    ctx.lineWidth = Math.max(2, L.cell * 0.06);
+    ctx.beginPath(); ctx.roundRect(L.bx, L.by, L.size, L.size, L.cell * 0.35); ctx.stroke();
+    ctx.restore();
   }
 
   drawObstacles(L) {
+    const obsList = this.m.obstacles || [];
+    if (!obsList.length) return;
     const { ctx } = this;
-    for (const o of this.m.obstacles || []) {
-      const x = L.bx + (o % this.m.width) * L.cell, y = L.by + ((o / this.m.width) | 0) * L.cell;
-      ctx.fillStyle = this.theme.obstacle;
-      ctx.beginPath(); ctx.roundRect(x + L.cell * 0.06, y + L.cell * 0.06, L.cell * 0.88, L.cell * 0.88, L.cell * 0.18); ctx.fill();
+    const W = this.m.width, H = this.m.height;
+    const obs = this._obsSet;
+    ctx.save();
+    for (const o of obsList) {
+      const gx = o % W, gy = (o / W) | 0;
+      const x = L.bx + gx * L.cell, y = L.by + gy * L.cell;
+      ctx.fillStyle = '#070a0f';
+      ctx.beginPath(); ctx.roundRect(x + L.cell * 0.03, y + L.cell * 0.03, L.cell * 0.94, L.cell * 0.94, L.cell * 0.14); ctx.fill();
+
+      // Subtle diagonal laser hatch inside carved arena dead-zones
+      ctx.strokeStyle = this.theme.obstacle;
+      ctx.lineWidth = Math.max(1, L.cell * 0.045);
+      ctx.beginPath();
+      ctx.moveTo(x + L.cell * 0.2, y + L.cell * 0.8);
+      ctx.lineTo(x + L.cell * 0.8, y + L.cell * 0.2);
+      ctx.stroke();
+
+      // Glowing neon perimeter along exposed obstacle edges so shaped arenas pop
+      ctx.strokeStyle = this.theme.accent;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = Math.max(1.5, L.cell * 0.065);
+      const m = L.cell * 0.05;
+      ctx.beginPath();
+      if (gy === 0 || !obs.has(o - W)) { ctx.moveTo(x + m, y + m); ctx.lineTo(x + L.cell - m, y + m); }
+      if (gy === H - 1 || !obs.has(o + W)) { ctx.moveTo(x + m, y + L.cell - m); ctx.lineTo(x + L.cell - m, y + L.cell - m); }
+      if (gx === 0 || !obs.has(o - 1)) { ctx.moveTo(x + m, y + m); ctx.lineTo(x + m, y + L.cell - m); }
+      if (gx === W - 1 || !obs.has(o + 1)) { ctx.moveTo(x + L.cell - m, y + m); ctx.lineTo(x + L.cell - m, y + L.cell - m); }
+      ctx.stroke();
+      ctx.globalAlpha = 1;
     }
+    ctx.restore();
   }
 
   drawMovers(L, tick, f, phased = false) {
@@ -113,22 +161,115 @@ export class Painter {
       const x = this.cx(L, a) + (this.cx(L, b) - this.cx(L, a)) * f;
       const y = this.cy(L, a) + (this.cy(L, b) - this.cy(L, a)) * f;
       ctx.save();
-      ctx.globalAlpha = phased ? 0.38 : 1;
-      ctx.shadowColor = this.theme.mover; ctx.shadowBlur = L.cell * 0.7;
-      ctx.fillStyle = this.theme.mover;
-      ctx.beginPath(); ctx.roundRect(x - L.cell * 0.42, y - L.cell * 0.42, L.cell * 0.84, L.cell * 0.84, L.cell * 0.22); ctx.fill();
+      // Draw subtle patrol track rail so the viewer sees the moving hazard route
+      ctx.strokeStyle = this.theme.mover;
+      ctx.globalAlpha = phased ? 0.08 : 0.24;
+      ctx.lineWidth = Math.max(2, L.cell * 0.10);
+      ctx.beginPath();
+      for (let i = 0; i < m.path.length; i++) {
+        const px = this.cx(L, m.path[i]), py = this.cy(L, m.path[i]);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+
+      if (phased) {
+        ctx.globalAlpha = 0.16;
+        ctx.lineWidth = Math.max(1.5, L.cell * 0.06);
+        ctx.beginPath(); ctx.roundRect(x - L.cell * 0.36, y - L.cell * 0.36, L.cell * 0.72, L.cell * 0.72, L.cell * 0.20); ctx.stroke();
+      } else {
+        ctx.globalAlpha = 1;
+        ctx.shadowColor = this.theme.mover; ctx.shadowBlur = L.cell * 0.75;
+        ctx.fillStyle = this.theme.mover;
+        ctx.beginPath(); ctx.roundRect(x - L.cell * 0.42, y - L.cell * 0.42, L.cell * 0.84, L.cell * 0.84, L.cell * 0.22); ctx.fill();
+        ctx.fillStyle = '#061018';
+        ctx.beginPath(); ctx.arc(x, y, L.cell * 0.16, 0, Math.PI * 2); ctx.fill();
+      }
       ctx.restore();
     }
   }
 
   drawApple(L, apple, ms) {
     const { ctx } = this;
-    const r = L.cell * 0.34 * (1 + Math.sin(ms / 180) * 0.06);
+    const pulse = 1 + Math.sin(ms / 150) * 0.08;
+    const r = L.cell * (apple.golden ? 0.38 : 0.34) * pulse;
+    const ax = this.cx(L, apple.cell), ay = this.cy(L, apple.cell);
+    const col = apple.golden ? this.theme.golden : this.theme.apple;
     ctx.save();
-    ctx.shadowColor = apple.golden ? this.theme.golden : this.theme.apple;
-    ctx.shadowBlur = L.cell * (apple.golden ? 1.4 : 0.8);
-    ctx.fillStyle = apple.golden ? this.theme.golden : this.theme.apple;
-    ctx.beginPath(); ctx.arc(this.cx(L, apple.cell), this.cy(L, apple.cell), r, 0, Math.PI * 2); ctx.fill();
+    // Subtle outer halo ring
+    ctx.strokeStyle = col;
+    ctx.globalAlpha = 0.32 * (1 - Math.sin(ms / 150) * 0.4);
+    ctx.lineWidth = Math.max(1.5, L.cell * 0.05);
+    ctx.beginPath(); ctx.arc(ax, ay, r * 1.32, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.globalAlpha = 1;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = L.cell * (apple.golden ? 1.45 : 0.85);
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(ax, ay, r, 0, Math.PI * 2); ctx.fill();
+    // Specular highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.beginPath(); ctx.arc(ax - r * 0.28, ay - r * 0.28, r * 0.24, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  drawParticles(L, eatEvents, ms) {
+    const { ctx } = this;
+    const DUR = 520;
+    for (const ev of eatEvents) {
+      const age = ms - ev.ms;
+      if (age < 0 || age > DUR || ev.cell < 0) continue;
+      const t = age / DUR;
+      const ease = 1 - (1 - t) * (1 - t);
+      const alpha = (1 - t) ** 1.5;
+      const ox = this.cx(L, ev.cell), oy = this.cy(L, ev.cell);
+      const col = ev.golden ? this.theme.golden : this.theme.apple;
+      const count = ev.golden ? 16 : 10;
+
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.65;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = Math.max(1.5, L.cell * (ev.golden ? 0.09 : 0.06) * (1 - t));
+      ctx.beginPath();
+      ctx.arc(ox, oy, L.cell * (0.35 + ease * (ev.golden ? 1.55 : 1.05)), 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = L.cell * 0.4;
+      for (let p = 0; p < count; p++) {
+        // Pure deterministic hash of (cell, tick, p) so renders are byte-identical
+        const h = ((ev.cell * 73 + (ev.tick || 1) * 37 + p * 97) & 0xffff) / 0xffff;
+        const ang = (p / count) * Math.PI * 2 + h * 0.5;
+        const dist = L.cell * (0.25 + (0.65 + h * (ev.golden ? 1.15 : 0.75)) * ease);
+        const px = ox + Math.cos(ang) * dist;
+        const py = oy + Math.sin(ang) * dist;
+        const pr = Math.max(1.2, L.cell * (ev.golden ? 0.11 : 0.085) * (1 - t * 0.75));
+        ctx.globalAlpha = alpha;
+        ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
+  drawShockwave(L, headCell, elapsedMs) {
+    const DUR = 1400;
+    if (elapsedMs < 0 || elapsedMs > DUR) return;
+    const { ctx } = this;
+    const t = elapsedMs / DUR;
+    const ease = 1 - (1 - t) ** 3;
+    const ox = this.cx(L, headCell), oy = this.cy(L, headCell);
+    const maxR = L.size * 1.15;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(L.bx, L.by, L.size, L.size); ctx.clip();
+    ctx.strokeStyle = this.theme.golden;
+    ctx.globalAlpha = (1 - t) * 0.75;
+    ctx.lineWidth = Math.max(2, L.cell * 0.18 * (1 - t));
+    ctx.beginPath(); ctx.arc(ox, oy, maxR * ease, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.strokeStyle = this.theme.head;
+    ctx.globalAlpha = (1 - t) * 0.45;
+    ctx.lineWidth = Math.max(1.5, L.cell * 0.10 * (1 - t));
+    ctx.beginPath(); ctx.arc(ox, oy, maxR * Math.max(0, ease - 0.12), 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
   }
 
@@ -139,7 +280,7 @@ export class Painter {
    * polyline surgery. The tail SLIDES into its neighbour rather than fading —
    * fading leaves a detached dark blob sitting on the board.
    */
-  drawSnake(L, base, target, f) {
+  drawSnake(L, base, target, f, frame = {}) {
     const { ctx } = this;
     const W = this.m.width, n = base.length;
     const adjacent = (a, b) => {
@@ -157,9 +298,6 @@ export class Painter {
       ctx.fill();
     };
 
-    // Two cells that touch only through the wrap seam are body-consecutive but
-    // not spatially adjacent. Without a bridge to each board edge the snake reads
-    // as detached beads at the seam — visible on every wrapping stage.
     const H = this.m.height;
     const wrapPair = (a, b) => {
       const ax = a % W, ay = (a / W) | 0, bx = b % W, by = (b / W) | 0;
@@ -209,19 +347,128 @@ export class Painter {
       ctx.fill();
     }
 
+    // Golden/regular swallow wave travelling down the snake body
+    if (frame.eatEvents && frame.eatEvents.length && frame.ms !== undefined && n < this.m.capacity) {
+      ctx.save();
+      for (const ev of frame.eatEvents) {
+        const age = frame.ms - ev.ms;
+        const wDur = ev.golden ? 580 : 320;
+        if (age < 0 || age > wDur) continue;
+        const span = Math.min(n - 1, ev.golden ? 26 : 12);
+        const centerIdx = (age / wDur) * span;
+        ctx.fillStyle = ev.golden ? this.theme.golden : this.theme.head;
+        for (let k = Math.max(1, Math.floor(centerIdx - 2)); k <= Math.min(n - 1, Math.ceil(centerIdx + 2)); k++) {
+          const dist = Math.abs(k - centerIdx);
+          if (dist > 2.2) continue;
+          const a = (1 - dist / 2.2) * (1 - age / wDur) * (ev.golden ? 0.62 : 0.36);
+          const cell = base[k];
+          const x = L.bx + (cell % W) * L.cell, y = L.by + ((cell / W) | 0) * L.cell;
+          ctx.globalAlpha = a;
+          ctx.beginPath();
+          ctx.roundRect(x + L.cell * 0.08, y + L.cell * 0.08, L.cell * 0.84, L.cell * 0.84, L.cell * 0.28);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+
+    // Smooth multi-tick motion trail during speed-ramp
+    if (frame.recentHeads && frame.recentHeads.length > 1) {
+      ctx.save();
+      ctx.strokeStyle = this.theme.head;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (let r = 0; r < frame.recentHeads.length - 1; r++) {
+        const c0 = frame.recentHeads[r], c1 = frame.recentHeads[r + 1];
+        if (!adjacent(c0, c1)) continue;
+        ctx.globalAlpha = ((r + 1) / frame.recentHeads.length) * 0.28;
+        ctx.lineWidth = L.cell * 0.56;
+        ctx.beginPath();
+        ctx.moveTo(this.cx(L, c0), this.cy(L, c0));
+        ctx.lineTo(this.cx(L, c1), this.cy(L, c1));
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     const from = base[0], to = target ? target[0] : base[0];
+    // Detect proximity to danger (active movers, obstacles, walls, or tight body corridors)
+    let nearDanger = false;
+    {
+      const tx = to % W, ty = (to / W) | 0;
+      if (!this.m.wrap && (tx === 0 || tx === W - 1 || ty === 0 || ty === H - 1)) nearDanger = true;
+      let blockedNbrs = 0;
+      const bodyTailSet = new Set(base.slice(2, Math.max(2, n - 1)));
+      const moverNow = new Set();
+      if (!frame.moversGone && this.m.movers) {
+        const tk = frame.tick | 0;
+        for (const mv of this.m.movers) {
+          moverNow.add(mv.path[(tk + mv.phase) % mv.path.length]);
+          moverNow.add(mv.path[(tk + 1 + mv.phase) % mv.path.length]);
+        }
+      }
+      for (const [dx, dy] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
+        const nx = tx + dx, ny = ty + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const nc = ny * W + nx;
+        if (this._obsSet.has(nc) || moverNow.has(nc)) { nearDanger = true; blockedNbrs++; }
+        else if (bodyTailSet.has(nc)) blockedNbrs++;
+      }
+      if (blockedNbrs >= 2) nearDanger = true;
+    }
+
+    const drawEyes = (hx, hy) => {
+      // Determine movement direction vector
+      let vx = 1, vy = 0;
+      if (from !== to && adjacent(from, to)) {
+        vx = (to % W) - (from % W);
+        vy = ((to / W) | 0) - ((from / W) | 0);
+      } else if (base.length > 1 && adjacent(base[1], from)) {
+        vx = (from % W) - (base[1] % W);
+        vy = ((from / W) | 0) - ((base[1] / W) | 0);
+      }
+      // Sideways perpendicular vector for placing left & right eyes
+      const px = -vy, py = vx;
+      const eyeFwd = L.cell * 0.16;
+      const eyeSep = L.cell * 0.19;
+      const eyeR = Math.max(1.8, L.cell * (nearDanger ? 0.135 : 0.112));
+      const pupilR = Math.max(1.0, eyeR * (nearDanger ? 0.50 : 0.57));
+
+      // Look toward the current apple if on board
+      let lx = vx, ly = vy;
+      if (frame.apple && frame.apple.cell >= 0) {
+        const dx = this.cx(L, frame.apple.cell) - hx;
+        const dy = this.cy(L, frame.apple.cell) - hy;
+        const mag = Math.hypot(dx, dy) || 1;
+        lx = dx / mag; ly = dy / mag;
+      }
+
+      ctx.save();
+      ctx.shadowBlur = 0;
+      for (const side of [-1, 1]) {
+        const ex = hx + vx * eyeFwd + px * eyeSep * side;
+        const ey = hy + vy * eyeFwd + py * eyeSep * side;
+        ctx.fillStyle = '#081018';
+        ctx.beginPath(); ctx.arc(ex, ey, eyeR * 1.18, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#f4fbff';
+        ctx.beginPath(); ctx.arc(ex, ey, eyeR, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#060a10';
+        ctx.beginPath(); ctx.arc(ex + lx * eyeR * 0.34, ey + ly * eyeR * 0.34, pupilR, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    };
+
     const head = (x, y) => {
       ctx.beginPath();
       ctx.roundRect(x - L.cell * 0.42, y - L.cell * 0.42, L.cell * 0.84, L.cell * 0.84, L.cell * 0.3);
       ctx.fill();
+      drawEyes(x, y);
     };
     ctx.save();
     ctx.shadowColor = this.theme.head; ctx.shadowBlur = L.cell * 0.9;
     ctx.fillStyle = this.theme.head;
     const wpHead = adjacent(from, to) ? null : wrapPair(from, to);
     if (wpHead) {
-      // Slide out one edge and in from the other, clipped to the board, instead
-      // of teleporting the head across the seam.
       ctx.beginPath(); ctx.rect(L.bx, L.by, L.size, L.size); ctx.clip();
       const d = f * L.cell * wpHead.out;
       if (wpHead.axis === 'x') {
@@ -245,25 +492,24 @@ export class Painter {
     const topY = L.vertical ? Math.round(L.H * 0.132) : Math.round(L.H * 0.16);
     const panel = L.W - L.bx - L.size;
     const cxm = L.vertical ? L.W / 2 : L.bx + L.size + Math.round(panel / 2);
-    // Scale off the panel it actually has to fit inside — a fixed fraction of the
-    // frame ran the fill bar off the right edge in landscape.
     const unit = L.vertical ? L.W : panel;
+    const maxW = Math.round(unit * 0.90);
 
     ctx.textAlign = 'center';
     ctx.fillStyle = this.theme.muted;
-    ctx.font = `700 ${Math.round(unit * 0.026)}px ui-sans-serif, system-ui, sans-serif`;
-    if (this.m.title) ctx.fillText(`${this.m.title}  ·  ${(this.m.rule || '').toUpperCase()}`, cxm, topY - Math.round(unit * 0.042));
+    ctx.font = `700 ${Math.round(unit * 0.025)}px ui-sans-serif, system-ui, sans-serif`;
+    if (this.m.title) ctx.fillText(`${this.m.title}  ·  ${(this.m.rule || '').toUpperCase()}`, cxm, topY - Math.round(unit * 0.042), maxW);
 
     ctx.fillStyle = this.theme.text;
     ctx.font = `800 ${Math.round(unit * 0.100)}px ui-monospace, SFMono-Regular, monospace`;
-    ctx.fillText(`${len} / ${this.m.capacity}`, cxm, topY + Math.round(unit * 0.038));
+    ctx.fillText(`${len} / ${this.m.capacity}`, cxm, topY + Math.round(unit * 0.038), maxW);
 
     if (!hookActive && L.vertical) {
       const left = Math.max(0, this.m.capacity - len);
       const y = L.by - Math.round(unit * 0.032);
       ctx.fillStyle = left === 0 ? this.theme.golden : this.theme.accent;
       ctx.font = `800 ${Math.round(unit * 0.040)}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.fillText(left === 0 ? '100% COMPLETE · HUMAN OR BOT?' : `${left} SQUARES LEFT · HUMAN OR BOT?`, cxm, y);
+      ctx.fillText(left === 0 ? '100% COMPLETE · HUMAN OR BOT?' : `${left} SQUARES LEFT · HUMAN OR BOT?`, cxm, y, maxW);
     }
 
     const bw = L.vertical ? L.size : Math.round(unit * 0.9);
@@ -280,15 +526,40 @@ export class Painter {
     ctx.fillText(`${(pct * 100).toFixed(1)}%`, cxm, by + bh + Math.round(unit * 0.048));
   }
 
-  /** Keystroke overlay. Lamp levels are supplied by the caller. */
-  drawKeys(L, lit) {
-    const { ctx } = this;
+  keyRects(L = this.layout()) {
     const panel = L.W - L.bx - L.size;
     const unit = L.vertical ? L.W : panel;
     const k = Math.round(unit * 0.072), gap = Math.round(k * 0.14);
     const cxm = L.vertical ? L.W / 2 : L.bx + L.size + Math.round(panel / 2);
     const cym = L.vertical ? L.H - Math.round(L.H * 0.085) : Math.round(L.H * 0.72);
-    const at = { up: [cxm, cym - k - gap], left: [cxm - k - gap, cym], down: [cxm, cym], right: [cxm + k + gap, cym] };
+    return {
+      k,
+      at: {
+        up: [cxm, cym - k - gap],
+        left: [cxm - k - gap, cym],
+        down: [cxm, cym],
+        right: [cxm + k + gap, cym],
+      },
+    };
+  }
+
+  /** Hit-test a canvas-space coordinate (x, y) against the 4 drawn keypad buttons. */
+  keyAt(canvasX, canvasY) {
+    const { k, at } = this.keyRects();
+    const hitHalf = k * 0.62;
+    const dirMap = { up: 0, right: 1, down: 2, left: 3 };
+    for (const [nm, [bx, by]] of Object.entries(at)) {
+      if (Math.abs(canvasX - bx) <= hitHalf && Math.abs(canvasY - by) <= hitHalf) {
+        return dirMap[nm];
+      }
+    }
+    return null;
+  }
+
+  /** Keystroke overlay. Lamp levels are supplied by the caller. */
+  drawKeys(L, lit) {
+    const { ctx } = this;
+    const { k, at } = this.keyRects(L);
     const glyph = { up: '▲', down: '▼', left: '◀', right: '▶' };
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (const nm of ['up', 'left', 'down', 'right']) {
@@ -307,39 +578,32 @@ export class Painter {
     ctx.textBaseline = 'alphabetic';
   }
 
-  /**
-   * Burned-in opening hook. The first ~1.5s decides whether a Short is
-   * distributed at all, and a bare counter is not a reason to keep watching.
-   * Sits between the counter and the board so it never covers the maze.
-   */
   drawHook(L, hook, ms) {
     if (ms > hook.untilMs) return;
     const fade = Math.min(1, (hook.untilMs - ms) / 350);
     const { ctx } = this;
     const unit = L.vertical ? L.W : L.W - L.bx - L.size;
+    const maxW = Math.round(unit * 0.90);
     const cxm = L.vertical ? L.W / 2 : L.bx + L.size + Math.round(unit / 2);
     const y = L.vertical ? L.by - Math.round(unit * 0.062) : Math.round(L.H * 0.45);
     ctx.save();
     ctx.globalAlpha = fade;
     ctx.textAlign = 'center';
     ctx.fillStyle = this.theme.text;
-    ctx.font = `800 ${Math.round(unit * 0.056)}px ui-sans-serif, system-ui, sans-serif`;
-    if (hook.en) ctx.fillText(hook.en, cxm, y);
+    ctx.font = `800 ${Math.round(unit * 0.052)}px ui-sans-serif, system-ui, sans-serif`;
+    if (hook.en) ctx.fillText(hook.en, cxm, y, maxW);
     ctx.fillStyle = this.theme.accent;
     ctx.font = `700 ${Math.round(unit * 0.032)}px ui-sans-serif, system-ui, sans-serif`;
-    if (hook.sub) ctx.fillText(hook.sub, cxm, y + Math.round(unit * 0.042));
+    if (hook.sub) ctx.fillText(hook.sub, cxm, y + Math.round(unit * 0.042), maxW);
     ctx.restore();
   }
 
-  /**
-   * End-of-loop call to action / engagement question ("Human or bot?").
-   * Fades in during the hold after the board closes to invite comments.
-   */
   drawEndHook(L, endHook, ms) {
     if (ms < endHook.fromMs) return;
     const fade = Math.min(1, (ms - endHook.fromMs) / 300);
     const { ctx } = this;
     const unit = L.vertical ? L.W : L.W - L.bx - L.size;
+    const maxW = Math.round(unit * 0.90);
     const cxm = L.vertical ? L.W / 2 : L.bx + L.size + Math.round(unit / 2);
     const y = L.vertical ? L.by - Math.round(unit * 0.062) : Math.round(L.H * 0.45);
     ctx.save();
@@ -347,10 +611,10 @@ export class Painter {
     ctx.textAlign = 'center';
     ctx.fillStyle = this.theme.text;
     ctx.font = `800 ${Math.round(unit * 0.056)}px ui-sans-serif, system-ui, sans-serif`;
-    if (endHook.en) ctx.fillText(endHook.en, cxm, y);
+    if (endHook.en) ctx.fillText(endHook.en, cxm, y, maxW);
     ctx.fillStyle = this.theme.golden;
     ctx.font = `700 ${Math.round(unit * 0.032)}px ui-sans-serif, system-ui, sans-serif`;
-    if (endHook.sub) ctx.fillText(endHook.sub, cxm, y + Math.round(unit * 0.042));
+    if (endHook.sub) ctx.fillText(endHook.sub, cxm, y + Math.round(unit * 0.042), maxW);
     ctx.restore();
   }
 
@@ -382,13 +646,24 @@ export class Renderer {
     this.snaps = [g.snake.slice()];
     this.apples = [{ cell: g.apple, golden: g.appleGolden }];
     this.moversGone = [g.moversGone];
-    for (const d of this.dirs) {
-      g.step(d);
+    this.eatEvents = [];
+    for (let i = 0; i < this.dirs.length; i++) {
+      const prevApple = g.apple;
+      const ev = g.step(this.dirs[i]);
       this.snaps.push(g.snake.slice());
       this.apples.push({ cell: g.apple, golden: g.appleGolden });
       this.moversGone.push(g.moversGone);
+      if (ev && ev.ate) {
+        this.eatEvents.push({
+          tick: ev.tick,
+          ms: this.log.tickStartMs[i] ?? 0,
+          cell: prevApple,
+          golden: !!ev.golden,
+        });
+      }
     }
     this.capacity = g.capacity;
+    this.fullMs = this.log.fullAtTick !== null ? this.log.tickStartMs[this.log.fullAtTick] : null;
     this.verified = g.snake.length >= g.capacity || this.log.finalLength >= this.log.capacity;
   }
 
@@ -415,11 +690,16 @@ export class Renderer {
   draw(ms) {
     const { i, f } = this.tickAt(ms);
     const base = this.snaps[i];
+    const recentHeads = [];
+    for (let k = Math.max(0, i - 4); k <= i; k++) {
+      if (ms - (this.log.tickStartMs[k] ?? 0) <= 65) recentHeads.push(this.snaps[k][0]);
+    }
     this.painter.paint({
       base, target: this.snaps[Math.min(i + 1, this.snaps.length - 1)], f,
       apple: this.apples[i], tick: i, moversGone: this.moversGone[i],
       len: base.length, ms, keyLights: this.keyLights(ms), hook: this.hook,
-      endHook: this.endHook,
+      endHook: this.endHook, eatEvents: this.eatEvents, fullMs: this.fullMs,
+      recentHeads,
     });
   }
 }

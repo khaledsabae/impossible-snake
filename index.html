@@ -12,48 +12,168 @@
   :root{--bg:#0b0f14;--panel:#111823;--text:#e8eff7;--muted:#7c8b9e;--accent:#3ddc84;--gold:#ffc93c}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
-    font-family:ui-sans-serif,system-ui,"Segoe UI",sans-serif;overscroll-behavior:none;touch-action:none}
-  body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:12px}
-  canvas{max-width:100%;max-height:74vh;border-radius:14px;touch-action:none}
-  #stages{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
-  button{font:inherit;font-size:14px;padding:9px 14px;border-radius:10px;border:1px solid #223046;
-    background:var(--panel);color:var(--muted);cursor:pointer;transition:.15s}
+    font-family:ui-sans-serif,system-ui,"Segoe UI",sans-serif;overscroll-behavior:none;touch-action:none;
+    -webkit-user-select:none;user-select:none}
+  body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:10px}
+  #topbar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center}
+  #stages,#arenas{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+  canvas{max-width:100%;max-height:70vh;border-radius:14px;touch-action:none;
+    -webkit-user-select:none;user-select:none;cursor:pointer}
+  button{font:inherit;font-size:13px;padding:7px 12px;border-radius:10px;border:1px solid #223046;
+    background:var(--panel);color:var(--muted);cursor:pointer;transition:.15s;
+    -webkit-user-select:none;user-select:none}
   button:hover{border-color:#31405a;color:var(--text)}
   button[aria-pressed=true]{background:var(--accent);color:#06110b;border-color:var(--accent);font-weight:700}
-  #best{font:600 13px ui-monospace,monospace;color:var(--muted)}
+  #arenas button{font-size:12px;padding:5px 10px}
+  #arenas button[aria-pressed=true]{background:#1e2d42;color:var(--gold);border-color:var(--gold)}
+  #best{font:600 13px ui-monospace,monospace;color:var(--muted);text-align:center}
+  #challenge{font:700 12px ui-monospace,monospace;color:var(--gold);background:rgba(255,201,60,.1);
+    border:1px solid rgba(255,201,60,.35);border-radius:8px;padding:4px 10px;display:none}
+  #challenge.on{display:inline-block}
   #over{position:fixed;inset:0;display:none;place-items:center;background:rgba(11,15,20,.9);z-index:5}
   #over.on{display:grid}
-  #card{background:var(--panel);border:1px solid #223046;border-radius:18px;padding:26px 30px;
-    text-align:center;max-width:min(92vw,420px)}
+  #card{background:var(--panel);border:1px solid #223046;border-radius:18px;padding:24px 28px;
+    text-align:center;max-width:min(92vw,440px)}
   #card h2{margin:0 0 6px;font-size:20px}
   #pct{font:800 52px ui-monospace,monospace;color:var(--accent);margin:8px 0}
-  #card p{color:var(--muted);font-size:14px;line-height:1.7;margin:10px 0 18px}
+  #card p{color:var(--muted);font-size:14px;line-height:1.65;margin:10px 0 18px}
+  .actions{display:flex;flex-direction:column;gap:10px;align-items:stretch}
+  #copy-score{background:var(--gold);color:#0b0f14;border-color:var(--gold);font-weight:700;padding:10px 16px}
+  #copy-score:hover{filter:brightness(1.08)}
+  #again{background:var(--accent);color:#06110b;border-color:var(--accent);font-weight:700;padding:10px 16px}
   kbd{background:#0b1220;border:1px solid #223046;border-radius:6px;padding:1px 6px;font:12px ui-monospace,monospace}
 </style>
 <body>
-  <div id="stages"></div>
+  <div id="topbar">
+    <div id="stages"></div>
+    <button id="sfx-btn" type="button" aria-pressed="true">🔊 Sound: ON</button>
+  </div>
+  <div id="arenas"></div>
+  <div id="challenge"></div>
   <canvas id="c" width="760" height="1000"></canvas>
   <div id="best"></div>
-  <div id="over"><div id="card">
+  <div id="over" role="dialog" aria-modal="true" aria-labelledby="verdict"><div id="card">
     <h2 id="verdict"></h2>
     <div id="pct"></div>
     <p id="note"></p>
-    <button id="again">Play Again</button>
+    <div class="actions">
+      <button id="copy-score" type="button">Copy Score for YouTube Comments 📋</button>
+      <button id="again" type="button">Play Again</button>
+    </div>
   </div></div>
 
 <script type="module">
 import { Game } from './core/game.js';
-import { STAGES, buildStage } from './core/stages.js';
+import { STAGES, ARENAS, buildStage } from './core/stages.js';
 import { Painter } from './render/renderer.js';
 
+const params = new URLSearchParams(location.search);
+const urlStage = Number(params.get('stage') || 0);
+const urlSeed = params.get('seed') !== null ? Number(params.get('seed')) : null;
+const urlCycle = params.get('cycle') !== null ? Number(params.get('cycle')) : null;
+const urlArena = params.get('arena') || null;
+
 const canvas = document.getElementById('c');
-let stageId = Number(localStorage.getItem('si.stage') || 1);
+let stageId = STAGES[urlStage] ? urlStage : Number(localStorage.getItem('si.stage') || 1);
+let arenaOverride = urlArena && ARENAS[urlArena] ? urlArena : null;
+let lockedSeed = urlSeed;
+let lockedCycle = urlCycle;
+
 let game, painter, prev, lastTickAt, tickMs, queued = [], running = false, raf = 0;
+let eatEvents = [], recentHeads = [], fullMs = null;
 const lamps = { up: 0, right: 0, down: 0, left: 0 };
 const DIRNAME = ['up', 'right', 'down', 'left'];
 
+// --- WebAudio Synthesizer (zero external assets) ---
+let audioCtx = null;
+let sfxEnabled = localStorage.getItem('si.sfx') !== '0';
+const PENTATONIC = [220, 261.63, 293.66, 329.63, 392, 440, 523.25, 587.33, 659.25, 783.99, 880, 987.77, 1046.5, 1174.66];
+const KEY_PITCH = [740, 810, 660, 700];
+
+function ensureAudio() {
+  if (!sfxEnabled) return null;
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) audioCtx = new Ctx();
+  }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  return audioCtx;
+}
+
+function playClick(dir = 0) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(KEY_PITCH[dir & 3], now);
+  osc.frequency.exponentialRampToValueAtTime(140, now + 0.022);
+  gain.gain.setValueAtTime(0.11, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.024);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + 0.025);
+}
+
+function playEat(fill, golden, count) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const idx = Math.min(PENTATONIC.length - 3, Math.floor(fill * (PENTATONIC.length - 5)) + (count % 3));
+  const f0 = PENTATONIC[idx], f1 = PENTATONIC[idx + 2];
+  const note = (t0, a, b, dur, vol) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(a, t0);
+    osc.frequency.linearRampToValueAtTime(b, t0 + dur);
+    gain.gain.setValueAtTime(vol, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.01);
+  };
+  note(now, f0, f1, golden ? 0.14 : 0.07, golden ? 0.18 : 0.13);
+  if (golden) note(now + 0.05, f1, PENTATONIC[Math.min(PENTATONIC.length - 1, idx + 4)], 0.16, 0.15);
+}
+
+function playEnd(won) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const freqs = won ? [523.25, 659.25, 783.99, 1046.5] : [220, 164.81];
+  freqs.forEach((f, i) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = won ? 'triangle' : 'sawtooth';
+    osc.frequency.setValueAtTime(f, now + i * 0.04);
+    gain.gain.setValueAtTime(0.11, now + i * 0.04);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now + i * 0.04);
+    osc.stop(now + 0.46);
+  });
+}
+
+const sfxBtn = document.getElementById('sfx-btn');
+function syncSfxBtn() {
+  sfxBtn.setAttribute('aria-pressed', String(sfxEnabled));
+  sfxBtn.textContent = sfxEnabled ? '🔊 Sound: ON' : '🔇 Sound: OFF';
+}
+sfxBtn.onclick = () => {
+  sfxEnabled = !sfxEnabled;
+  localStorage.setItem('si.sfx', sfxEnabled ? '1' : '0');
+  if (sfxEnabled) ensureAudio();
+  syncSfxBtn();
+};
+syncSfxBtn();
+
 function fit() {
-  const w = Math.min(760, window.innerWidth - 24);
+  const w = Math.min(760, window.innerWidth - 20);
   canvas.width = w; canvas.height = Math.round(w * 1.32);
 }
 
@@ -62,22 +182,41 @@ function speedFor(g, stage) {
   return Math.max(s.minMs, s.baseMs - g.applesEaten * s.rampPerApple);
 }
 
-function start(id) {
+function start(id, keepChallenge = false) {
   stageId = id;
   localStorage.setItem('si.stage', String(id));
-  const { stage } = buildStage(id);
-  // Same engine, same ruleset object, same speed curve as the recorded run.
-  // A random seed only changes where the apples land.
-  game = new Game(stage, (Math.random() * 1e9) | 0);
+  if (!keepChallenge) {
+    lockedSeed = null;
+    lockedCycle = null;
+  }
+  const cSeed = lockedCycle !== null ? lockedCycle : undefined;
+  const { stage } = buildStage(id, cSeed, arenaOverride || undefined);
+  const runSeed = lockedSeed !== null ? lockedSeed : ((Math.random() * 1e9) | 0);
+  game = new Game(stage, runSeed);
   game.__stage = stage;
+  game.__runSeed = runSeed;
   painter = new Painter(canvas, { ...stage, capacity: game.capacity, title: stage.title, rule: stage.rule });
   prev = game.snake.slice();
+  eatEvents = [];
+  recentHeads = [game.head];
+  fullMs = null;
   tickMs = speedFor(game, stage);
   lastTickAt = performance.now();
   queued = [];
   running = true;
   document.getElementById('over').classList.remove('on');
+  document.getElementById('copy-score').textContent = 'Copy Score for YouTube Comments 📋';
+
+  const chEl = document.getElementById('challenge');
+  if (lockedSeed !== null || lockedCycle !== null) {
+    chEl.textContent = `🎯 Video Challenge · ${stage.arenaName} · Seed #${runSeed}`;
+    chEl.classList.add('on');
+  } else {
+    chEl.classList.remove('on');
+  }
+
   paintStages();
+  paintArenas();
   showBest();
   cancelAnimationFrame(raf);
   loop();
@@ -88,11 +227,22 @@ function loop() {
   const now = performance.now();
   if (running && now - lastTickAt >= tickMs) {
     prev = game.snake.slice();
+    const prevApple = game.apple;
     const d = queued.length ? queued.shift() : game.dir;
-    game.step(d);
+    const ev = game.step(d);
     lastTickAt = now;
     tickMs = speedFor(game, game.__stage);
-    if (!game.alive || game.fullAtTick !== null) finish();
+    recentHeads.push(game.head);
+    if (recentHeads.length > 4) recentHeads.shift();
+    if (ev && ev.ate) {
+      eatEvents.push({ tick: ev.tick, ms: now, cell: prevApple, golden: !!ev.golden });
+      if (eatEvents.length > 8) eatEvents.shift();
+      playEat(game.snake.length / game.capacity, !!ev.golden, game.applesEaten);
+    }
+    if (!game.alive || game.fullAtTick !== null) {
+      if (game.fullAtTick !== null) fullMs = now;
+      finish();
+    }
   }
   const f = running ? Math.min(1, (now - lastTickAt) / tickMs) : 1;
   for (const k of Object.keys(lamps)) lamps[k] = Math.max(0, lamps[k] - 0.045);
@@ -101,6 +251,7 @@ function loop() {
     apple: { cell: game.apple, golden: game.appleGolden },
     tick: Math.max(0, game.tick - 1), moversGone: game.moversGone,
     len: game.snake.length, ms: now, keyLights: lamps,
+    eatEvents, fullMs, recentHeads: tickMs <= 65 ? recentHeads : [game.head],
   });
 }
 
@@ -111,31 +262,67 @@ function finish() {
   const best = Math.max(Number(localStorage.getItem(key) || 0), pct);
   localStorage.setItem(key, String(best));
   const won = game.fullAtTick !== null;
+  playEnd(won);
   document.getElementById('verdict').textContent = won ? '100% BOARD COMPLETE' : 'RUN ENDED';
   document.getElementById('pct').textContent = `${(pct * 100).toFixed(1)}%`;
+  const arenaLabel = game.__stage?.arenaName || STAGES[stageId].arenaName || 'CLASSIC';
   document.getElementById('note').innerHTML = won
-    ? 'If you completed this by hand, send us the screenshot.'
-    : `Length ${game.snake.length} / ${game.capacity}. Personal best on this stage: <b>${(best * 100).toFixed(1)}%</b>`;
+    ? `You conquered <b>${arenaLabel}</b> (${game.capacity}/${game.capacity} squares)! Copy your score and post it in the YouTube comments.`
+    : `Length <b>${game.snake.length} / ${game.capacity}</b> on <b>${arenaLabel}</b>.<br>Personal best on Stage ${stageId}: <b>${(best * 100).toFixed(1)}%</b>`;
   document.getElementById('over').classList.add('on');
+  document.getElementById('again').focus();
   showBest();
 }
 
 function showBest() {
   const b = Number(localStorage.getItem(`si.best.${stageId}`) || 0);
+  const arenaLabel = game?.__stage?.arenaName || STAGES[stageId].arenaName || '';
   document.getElementById('best').textContent =
-    `Personal Best: ${(b * 100).toFixed(1)}%  ·  ${STAGES[stageId].rule}`;
+    `Personal Best: ${(b * 100).toFixed(1)}%  ·  ${arenaLabel}  ·  ${STAGES[stageId].rule}`;
 }
+
+const ARENA_STAGE = { donut: 6, hourglass: 7, skull: 8, chambers: 9 };
 
 function paintStages() {
   const host = document.getElementById('stages');
   host.innerHTML = '';
-  for (const id of Object.keys(STAGES).map(Number)) {
+  for (const id of [1, 2, 3, 4, 5]) {
     const b = document.createElement('button');
-    b.textContent = STAGES[id].title;
-    b.setAttribute('aria-pressed', String(id === stageId));
-    b.onclick = () => start(id);
+    b.type = 'button';
+    b.textContent = (id === stageId && game?.__stage?.title) ? game.__stage.title : STAGES[id].title;
+    b.setAttribute('aria-pressed', String(id === stageId && !arenaOverride));
+    b.onclick = () => { arenaOverride = null; start(id, false); };
     host.appendChild(b);
   }
+}
+
+function paintArenas() {
+  const host = document.getElementById('arenas');
+  host.innerHTML = '';
+  const activeArena = arenaOverride || game?.__stage?.arena || STAGES[stageId].arena;
+  for (const [k, def] of Object.entries(ARENAS)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = def.name;
+    b.setAttribute('aria-pressed', String(k === activeArena));
+    b.onclick = () => {
+      if (ARENA_STAGE[k]) {
+        arenaOverride = null;
+        start(ARENA_STAGE[k], false);
+      } else {
+        arenaOverride = k;
+        start(stageId > 5 ? (k === 'box' ? 4 : 3) : stageId, false);
+      }
+    };
+    host.appendChild(b);
+  }
+}
+
+function queueDir(d) {
+  if (d === undefined || d === null || !running) return;
+  lamps[DIRNAME[d]] = 1;
+  playClick(d);
+  if (queued.length < 2) queued.push(d);
 }
 
 const KEYMAP = {
@@ -143,29 +330,70 @@ const KEYMAP = {
   w: 0, d: 1, s: 2, a: 3, W: 0, D: 1, S: 2, A: 3,
 };
 addEventListener('keydown', (e) => {
+  if (!running) {
+    if ((e.key === 'Escape' || e.key === 'Enter') && document.getElementById('over').classList.contains('on')) {
+      e.preventDefault();
+      start(stageId, lockedSeed !== null || lockedCycle !== null);
+    }
+    return;
+  }
   const d = KEYMAP[e.key];
   if (d === undefined) return;
   e.preventDefault();
-  lamps[DIRNAME[d]] = 1;
-  if (queued.length < 2) queued.push(d);
+  queueDir(d);
 });
 
-let touch = null;
-canvas.addEventListener('touchstart', (e) => { touch = e.changedTouches[0]; }, { passive: true });
-canvas.addEventListener('touchend', (e) => {
-  if (!touch) return;
-  const t = e.changedTouches[0];
-  const dx = t.clientX - touch.clientX, dy = t.clientY - touch.clientY;
-  if (Math.hypot(dx, dy) < 24) return;
-  const d = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0);
-  lamps[DIRNAME[d]] = 1;
-  if (queued.length < 2) queued.push(d);
-}, { passive: true });
+let pointerStart = null;
+canvas.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  const rect = canvas.getBoundingClientRect();
+  const cx = ((e.clientX - rect.left) / rect.width) * canvas.width;
+  const cy = ((e.clientY - rect.top) / rect.height) * canvas.height;
+  const hitDir = painter ? painter.keyAt(cx, cy) : null;
+  if (hitDir !== null) {
+    e.preventDefault();
+    queueDir(hitDir);
+    pointerStart = null;
+    return;
+  }
+  pointerStart = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  try { canvas.setPointerCapture(e.pointerId); } catch {}
+});
 
-document.getElementById('again').onclick = () => start(stageId);
+canvas.addEventListener('pointerup', (e) => {
+  if (!pointerStart || pointerStart.id !== e.pointerId) return;
+  const dx = e.clientX - pointerStart.x, dy = e.clientY - pointerStart.y;
+  pointerStart = null;
+  if (Math.hypot(dx, dy) < 22) return;
+  const d = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0);
+  queueDir(d);
+});
+
+canvas.addEventListener('pointercancel', () => { pointerStart = null; });
+canvas.addEventListener('lostpointercapture', () => { pointerStart = null; });
+
+document.getElementById('copy-score').onclick = async () => {
+  const pct = ((game.snake.length / game.capacity) * 100).toFixed(1);
+  const stageTitle = game.__stage?.title || STAGES[stageId].title;
+  const challengeTag = (lockedSeed !== null || lockedCycle !== null) ? ` (Video Seed #${game.__runSeed})` : '';
+  const text = `🐍 I reached ${pct}% (${game.snake.length}/${game.capacity} squares) on ${stageTitle}${challengeTag}! Can anyone beat this?`;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  document.getElementById('copy-score').textContent = 'Copied! Paste in YouTube Comments ✅';
+};
+
+document.getElementById('again').onclick = () => start(stageId, lockedSeed !== null || lockedCycle !== null);
 addEventListener('resize', () => { fit(); });
 fit();
-start(stageId);
+start(stageId, true);
 </script>
 </body>
 </html>
