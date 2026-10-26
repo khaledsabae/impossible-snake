@@ -210,11 +210,22 @@ syncSfxBtn();
 const battleBtn = document.getElementById('battle-btn');
 battleBtn.onclick = () => {
   if (mode === 'battle') {
-    startBattle(false);
+    start(stageId, false);
   } else {
     startBattle(false);
   }
 };
+
+function setModalOpen(open) {
+  const overEl = document.getElementById('over');
+  overEl.classList.toggle('on', open);
+  for (const id of ['topbar', 'arenas', 'battle-colors', 'c']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (open) el.setAttribute('inert', '');
+    else el.removeAttribute('inert');
+  }
+}
 
 function fit() {
   const w = Math.min(760, window.innerWidth - 20);
@@ -249,7 +260,7 @@ function start(id, keepChallenge = false) {
   lastTickAt = performance.now();
   queued = [];
   running = true;
-  document.getElementById('over').classList.remove('on');
+  setModalOpen(false);
   document.getElementById('pct').style.color = 'var(--accent)';
   document.getElementById('copy-score').textContent = 'Copy Score for YouTube Comments 📋';
 
@@ -301,7 +312,7 @@ function startBattle(keepChallenge = false) {
   lastTickAt = performance.now();
   queued = [];
   running = true;
-  document.getElementById('over').classList.remove('on');
+  setModalOpen(false);
   document.getElementById('copy-score').textContent = 'Copy Battle Result for YouTube Comments 📋';
 
   const chEl = document.getElementById('challenge');
@@ -352,10 +363,10 @@ function loop() {
         playElim(el.id === playerColor);
       }
 
-      if (!battleGame.snakes[playerColor].alive && battleGame.winner === null) {
-        tickMs = 24; // fast-forward remaining rivals to crown the match winner
-      } else if (now < battleSlowUntil) {
-        tickMs = 230; // 2x slow-motion on eliminations
+      if (now < battleSlowUntil) {
+        tickMs = 230; // 2x slow-motion on eliminations (including player's own elimination)
+      } else if (!battleGame.snakes[playerColor].alive && battleGame.winner === null) {
+        tickMs = 24; // fast-forward remaining rivals after death slow-mo to crown the match winner
       } else {
         tickMs = 115;
       }
@@ -438,7 +449,32 @@ function paintBattleFrame(ms, f) {
   ctx.stroke();
   ctx.restore();
 
-  // 2. Obstacles & Shrinking Ring
+  // 2. Obstacles & Shrinking Ring (+ imminent shrink warning)
+  const nextShrinkTick = battleGame.shrinkStartTick + battleGame.shrinkRing * battleGame.shrinkEvery;
+  const ticksToShrink = nextShrinkTick - battleGame.tick;
+  const shrinkImminent = battleGame.shrinkRing < battleGame.maxShrinkRing && ticksToShrink > 0 && ticksToShrink <= 8;
+  if (shrinkImminent) {
+    const r = battleGame.shrinkRing;
+    const warnAlpha = 0.22 + 0.18 * (0.5 + 0.5 * Math.sin(ms / 90));
+    ctx.save();
+    ctx.strokeStyle = '#ffbe0b';
+    ctx.fillStyle = `rgba(255, 77, 90, ${warnAlpha.toFixed(3)})`;
+    ctx.lineWidth = Math.max(1.5, L.cell * 0.06);
+    for (let x = r; x < W - r; x++) {
+      for (const y of [r, H - 1 - r]) {
+        const px = L.bx + x * L.cell, py = L.by + y * L.cell;
+        ctx.fillRect(px + L.cell * 0.06, py + L.cell * 0.06, L.cell * 0.88, L.cell * 0.88);
+      }
+    }
+    for (let y = r + 1; y < H - 1 - r; y++) {
+      for (const x of [r, W - 1 - r]) {
+        const px = L.bx + x * L.cell, py = L.by + y * L.cell;
+        ctx.fillRect(px + L.cell * 0.06, py + L.cell * 0.06, L.cell * 0.88, L.cell * 0.88);
+      }
+    }
+    ctx.restore();
+  }
+
   const obsSet = battleGame.obstacles;
   if (obsSet.size > 0) {
     ctx.save();
@@ -606,12 +642,14 @@ function paintBattleFrame(ms, f) {
   const cxm = L.W / 2;
   ctx.save();
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffc93c';
+  ctx.fillStyle = shrinkImminent ? '#ff4d5a' : '#ffc93c';
   ctx.font = `800 ${Math.round(L.W * 0.026)}px ui-sans-serif, system-ui, sans-serif`;
   if (!battleGame.snakes[playerColor].alive && battleGame.winner === null) {
     ctx.fillText('YOU WERE ELIMINATED · RESOLVING FINAL DUEL...', cxm, Math.round(L.H * 0.045));
   } else if (activeElim) {
     ctx.fillText(`⚡ ${activeElim.name} ELIMINATED! (2× SLOW-MO)`, cxm, Math.round(L.H * 0.045));
+  } else if (shrinkImminent) {
+    ctx.fillText(`⚠️ BORDER SHRINKING IN ${ticksToShrink} · MOVE INWARD!`, cxm, Math.round(L.H * 0.045));
   } else {
     ctx.fillText(`4-COLOR ARENA · YOU ARE ${COLORS[playerColor].name}`, cxm, Math.round(L.H * 0.045));
   }
@@ -713,7 +751,7 @@ function finishBattle() {
     `You picked <b>${pSnake.name}</b> — Length <b>${pSnake.cells.length}</b> · Kills <b>${pSnake.kills}</b>.<br>` +
     `Arena Champion: <b>${wSnake.name}</b> (${wSnake.cells.length} squares) · Seed #${battleGame.seed}`;
   document.getElementById('copy-score').textContent = 'Copy Battle Result for YouTube Comments 📋';
-  document.getElementById('over').classList.add('on');
+  setModalOpen(true);
   document.getElementById('again').focus();
   showBest();
 }
@@ -734,7 +772,7 @@ function finish() {
   document.getElementById('note').innerHTML = won
     ? `You conquered <b>${arenaLabel}</b> (${game.capacity}/${game.capacity} squares)! Copy your score and post it in the YouTube comments.`
     : `Length <b>${game.snake.length} / ${game.capacity}</b> on <b>${arenaLabel}</b>.<br>Personal best on Stage ${stageId}: <b>${(best * 100).toFixed(1)}%</b>`;
-  document.getElementById('over').classList.add('on');
+  setModalOpen(true);
   document.getElementById('again').focus();
   showBest();
 }
@@ -826,12 +864,23 @@ function paintBattleColors() {
     };
     host.appendChild(b);
   }
+
+  const newSeedBtn = document.createElement('button');
+  newSeedBtn.type = 'button';
+  newSeedBtn.textContent = '🎲 New Arena';
+  newSeedBtn.onclick = () => startBattle(false);
+  host.appendChild(newSeedBtn);
 }
 
 function queueDir(d) {
   if (d === undefined || d === null || !running) return;
   lamps[DIRNAME[d]] = 1;
   playClick(d);
+  const currentDir = mode === 'battle'
+    ? (battleGame?.snakes?.[playerColor]?.dir ?? 1)
+    : (game?.dir ?? 1);
+  const lastDir = queued.length ? queued[queued.length - 1] : currentDir;
+  if (d === lastDir || d === ((lastDir + 2) & 3)) return;
   if (queued.length < 2) queued.push(d);
 }
 
@@ -896,6 +945,7 @@ document.getElementById('copy-score').onclick = async () => {
     const challengeTag = (lockedSeed !== null || lockedCycle !== null) ? ` (Video Seed #${game.__runSeed})` : '';
     text = `🐍 I reached ${pct}% (${game.snake.length}/${game.capacity} squares) on ${stageTitle}${challengeTag}! Can anyone beat this?`;
   }
+  document.getElementById('copy-score').textContent = 'Copied! Paste in YouTube Comments ✅';
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -906,7 +956,6 @@ document.getElementById('copy-score').onclick = async () => {
     document.execCommand('copy');
     ta.remove();
   }
-  document.getElementById('copy-score').textContent = 'Copied! Paste in YouTube Comments ✅';
 };
 
 document.getElementById('again').onclick = () => {
