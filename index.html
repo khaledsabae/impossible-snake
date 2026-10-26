@@ -16,7 +16,7 @@
     -webkit-user-select:none;user-select:none}
   body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:10px}
   #topbar{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center}
-  #stages,#arenas{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+  #stages,#arenas,#battle-colors{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;align-items:center}
   canvas{max-width:100%;max-height:70vh;border-radius:14px;touch-action:none;
     -webkit-user-select:none;user-select:none;cursor:pointer}
   button{font:inherit;font-size:13px;padding:7px 12px;border-radius:10px;border:1px solid #223046;
@@ -24,8 +24,11 @@
     -webkit-user-select:none;user-select:none}
   button:hover{border-color:#31405a;color:var(--text)}
   button[aria-pressed=true]{background:var(--accent);color:#06110b;border-color:var(--accent);font-weight:700}
-  #arenas button{font-size:12px;padding:5px 10px}
+  #battle-btn{border-color:#4a2545;color:#ffccd5;font-weight:700}
+  #battle-btn[aria-pressed=true]{background:linear-gradient(135deg,#ff3b5c,#ffbe0b);color:#090c10;border-color:#ffbe0b}
+  #arenas button,#battle-colors button{font-size:12px;padding:5px 10px}
   #arenas button[aria-pressed=true]{background:#1e2d42;color:var(--gold);border-color:var(--gold)}
+  .color-label{font:700 12px ui-sans-serif,system-ui,sans-serif;color:var(--muted);margin-right:2px}
   #best{font:600 13px ui-monospace,monospace;color:var(--muted);text-align:center}
   #challenge{font:700 12px ui-monospace,monospace;color:var(--gold);background:rgba(255,201,60,.1);
     border:1px solid rgba(255,201,60,.35);border-radius:8px;padding:4px 10px;display:none}
@@ -35,7 +38,7 @@
   #card{background:var(--panel);border:1px solid #223046;border-radius:18px;padding:24px 28px;
     text-align:center;max-width:min(92vw,440px)}
   #card h2{margin:0 0 6px;font-size:20px}
-  #pct{font:800 52px ui-monospace,monospace;color:var(--accent);margin:8px 0}
+  #pct{font:800 44px ui-monospace,monospace;color:var(--accent);margin:8px 0}
   #card p{color:var(--muted);font-size:14px;line-height:1.65;margin:10px 0 18px}
   .actions{display:flex;flex-direction:column;gap:10px;align-items:stretch}
   #copy-score{background:var(--gold);color:#0b0f14;border-color:var(--gold);font-weight:700;padding:10px 16px}
@@ -46,9 +49,11 @@
 <body>
   <div id="topbar">
     <div id="stages"></div>
+    <button id="battle-btn" type="button" aria-pressed="false">⚔️ 4-Color Battle</button>
     <button id="sfx-btn" type="button" aria-pressed="true">🔊 Sound: ON</button>
   </div>
   <div id="arenas"></div>
+  <div id="battle-colors" style="display:none"></div>
   <div id="challenge"></div>
   <canvas id="c" width="760" height="1000"></canvas>
   <div id="best"></div>
@@ -65,22 +70,35 @@
 <script type="module">
 import { Game } from './core/game.js';
 import { STAGES, ARENAS, buildStage } from './core/stages.js';
+import { BattleGame, COLORS } from './core/battle.js';
+import { BattleAI } from './core/battle-ai.js';
 import { Painter } from './render/renderer.js';
 
 const params = new URLSearchParams(location.search);
+const urlMode = params.get('mode') === 'battle' ? 'battle' : 'solo';
 const urlStage = Number(params.get('stage') || 0);
 const urlSeed = params.get('seed') !== null ? Number(params.get('seed')) : null;
 const urlCycle = params.get('cycle') !== null ? Number(params.get('cycle')) : null;
 const urlArena = params.get('arena') || null;
+const urlColor = (params.get('color') || '').toLowerCase();
 
 const canvas = document.getElementById('c');
+let mode = urlMode;
 let stageId = STAGES[urlStage] ? urlStage : Number(localStorage.getItem('si.stage') || 1);
 let arenaOverride = urlArena && ARENAS[urlArena] ? urlArena : null;
 let lockedSeed = urlSeed;
 let lockedCycle = urlCycle;
 
+const initialColorIdx = COLORS.findIndex((c) => c.key === urlColor || String(c.id) === urlColor);
+let playerColor = initialColorIdx >= 0 ? initialColorIdx : Number(localStorage.getItem('si.color') || 0) & 3;
+
 let game, painter, prev, lastTickAt, tickMs, queued = [], running = false, raf = 0;
 let eatEvents = [], recentHeads = [], fullMs = null;
+
+// Battle mode state
+let battleGame = null, battleAi = null, battlePrev = [], battleEatEvents = [], battleElimEvents = [];
+let battleSlowUntil = 0, battleWinMs = null, lastBattleSummary = null;
+
 const lamps = { up: 0, right: 0, down: 0, left: 0 };
 const DIRNAME = ['up', 'right', 'down', 'left'];
 
@@ -140,6 +158,23 @@ function playEat(fill, golden, count) {
   if (golden) note(now + 0.05, f1, PENTATONIC[Math.min(PENTATONIC.length - 1, idx + 4)], 0.16, 0.15);
 }
 
+function playElim(isPlayer = false) {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = isPlayer ? 'sawtooth' : 'triangle';
+  osc.frequency.setValueAtTime(isPlayer ? 160 : 130, now);
+  osc.frequency.exponentialRampToValueAtTime(42, now + 0.28);
+  gain.gain.setValueAtTime(0.18, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.30);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + 0.31);
+}
+
 function playEnd(won) {
   const ctx = ensureAudio();
   if (!ctx) return;
@@ -172,6 +207,15 @@ sfxBtn.onclick = () => {
 };
 syncSfxBtn();
 
+const battleBtn = document.getElementById('battle-btn');
+battleBtn.onclick = () => {
+  if (mode === 'battle') {
+    startBattle(false);
+  } else {
+    startBattle(false);
+  }
+};
+
 function fit() {
   const w = Math.min(760, window.innerWidth - 20);
   canvas.width = w; canvas.height = Math.round(w * 1.32);
@@ -183,6 +227,7 @@ function speedFor(g, stage) {
 }
 
 function start(id, keepChallenge = false) {
+  mode = 'solo';
   stageId = id;
   localStorage.setItem('si.stage', String(id));
   if (!keepChallenge) {
@@ -205,6 +250,7 @@ function start(id, keepChallenge = false) {
   queued = [];
   running = true;
   document.getElementById('over').classList.remove('on');
+  document.getElementById('pct').style.color = 'var(--accent)';
   document.getElementById('copy-score').textContent = 'Copy Score for YouTube Comments 📋';
 
   const chEl = document.getElementById('challenge');
@@ -216,8 +262,62 @@ function start(id, keepChallenge = false) {
     chEl.classList.remove('on');
   }
 
+  battleBtn.setAttribute('aria-pressed', 'false');
+  document.getElementById('arenas').style.display = 'flex';
+  document.getElementById('battle-colors').style.display = 'none';
   paintStages();
   paintArenas();
+  showBest();
+  cancelAnimationFrame(raf);
+  loop();
+}
+
+function startBattle(keepChallenge = false) {
+  mode = 'battle';
+  if (!keepChallenge) {
+    lockedSeed = null;
+    lockedCycle = null;
+  }
+  const runSeed = lockedSeed !== null ? lockedSeed : (1 + ((Math.random() * 999999) | 0));
+  battleGame = new BattleGame(runSeed);
+  battleGame.__runSeed = runSeed;
+  battleAi = new BattleAI(battleGame, runSeed);
+  battlePrev = battleGame.snakes.map((s) => ({ ...s, cells: s.cells.slice() }));
+  battleEatEvents = [];
+  battleElimEvents = [];
+  battleSlowUntil = 0;
+  battleWinMs = null;
+  lastBattleSummary = null;
+  painter = new Painter(canvas, {
+    width: battleGame.w,
+    height: battleGame.h,
+    obstacles: [],
+    movers: [],
+    capacity: battleGame.n,
+    title: '4-COLOR BATTLE',
+    rule: 'Last Snake Standing',
+  });
+  tickMs = 115;
+  lastTickAt = performance.now();
+  queued = [];
+  running = true;
+  document.getElementById('over').classList.remove('on');
+  document.getElementById('copy-score').textContent = 'Copy Battle Result for YouTube Comments 📋';
+
+  const chEl = document.getElementById('challenge');
+  const colName = COLORS[playerColor].name;
+  if (lockedSeed !== null) {
+    chEl.textContent = `🎯 Video Battle Challenge · Seed #${runSeed} · Playing as ${colName}`;
+  } else {
+    chEl.textContent = `⚔️ 18×18 Shrinking Battle Arena · Seed #${runSeed} · You: ${colName}`;
+  }
+  chEl.classList.add('on');
+
+  battleBtn.setAttribute('aria-pressed', 'true');
+  document.getElementById('arenas').style.display = 'none';
+  document.getElementById('battle-colors').style.display = 'flex';
+  paintStages();
+  paintBattleColors();
   showBest();
   cancelAnimationFrame(raf);
   loop();
@@ -226,6 +326,51 @@ function start(id, keepChallenge = false) {
 function loop() {
   raf = requestAnimationFrame(loop);
   const now = performance.now();
+
+  if (mode === 'battle') {
+    if (running && now - lastTickAt >= tickMs) {
+      battlePrev = battleGame.snakes.map((s) => ({ ...s, cells: s.cells.slice() }));
+      const dirs = battleAi.nextDirs();
+      const pSnake = battleGame.snakes[playerColor];
+      if (pSnake && pSnake.alive) {
+        const d = queued.length ? queued.shift() : pSnake.dir;
+        dirs[playerColor] = d;
+      }
+      const res = battleGame.step(dirs);
+      lastTickAt = now;
+
+      for (const a of res.ate) {
+        battleEatEvents.push({ tick: res.tick, ms: now, cell: a.cell, golden: !!a.golden, snakeId: a.id });
+        if (battleEatEvents.length > 12) battleEatEvents.shift();
+        if (a.id === playerColor || a.golden) {
+          playEat(0.5, !!a.golden, battleGame.snakes[a.id].applesEaten);
+        }
+      }
+      for (const el of res.eliminations) {
+        battleElimEvents.push({ ...el, ms: now });
+        battleSlowUntil = now + 520;
+        playElim(el.id === playerColor);
+      }
+
+      if (!battleGame.snakes[playerColor].alive && battleGame.winner === null) {
+        tickMs = 24; // fast-forward remaining rivals to crown the match winner
+      } else if (now < battleSlowUntil) {
+        tickMs = 230; // 2x slow-motion on eliminations
+      } else {
+        tickMs = 115;
+      }
+
+      if (battleGame.winner !== null) {
+        battleWinMs = now;
+        finishBattle();
+      }
+    }
+    const f = running ? Math.min(1, (now - lastTickAt) / tickMs) : 1;
+    for (const k of Object.keys(lamps)) lamps[k] = Math.max(0, lamps[k] - 0.045);
+    paintBattleFrame(now, f);
+    return;
+  }
+
   if (running && now - lastTickAt >= tickMs) {
     prev = game.snake.slice();
     const prevApple = game.apple;
@@ -256,6 +401,323 @@ function loop() {
   });
 }
 
+function paintBattleFrame(ms, f) {
+  const ctx = canvas.getContext('2d');
+  const L = painter.layout();
+  const W = battleGame.w, H = battleGame.h;
+  const cx = (cell) => L.bx + ((cell % W) + 0.5) * L.cell;
+  const cy = (cell) => L.by + (((cell / W) | 0) + 0.5) * L.cell;
+
+  ctx.direction = 'ltr';
+  ctx.fillStyle = '#080b11';
+  ctx.fillRect(0, 0, L.W, L.H);
+
+  let activeElim = null;
+  for (const el of battleElimEvents) {
+    if (ms >= el.ms && ms <= el.ms + 750) activeElim = el;
+  }
+
+  // 1. Board & Grid
+  ctx.save();
+  ctx.fillStyle = '#0c121b';
+  ctx.beginPath();
+  ctx.roundRect(L.bx, L.by, L.size, L.size, L.cell * 0.35);
+  ctx.fill();
+  ctx.strokeStyle = '#162030';
+  ctx.lineWidth = Math.max(1, L.cell * 0.035);
+  for (let k = 1; k < W; k++) {
+    ctx.beginPath(); ctx.moveTo(L.bx + k * L.cell, L.by); ctx.lineTo(L.bx + k * L.cell, L.by + L.size); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(L.bx, L.by + k * L.cell); ctx.lineTo(L.bx + L.size, L.by + k * L.cell); ctx.stroke();
+  }
+  const pCol = COLORS[playerColor];
+  ctx.strokeStyle = activeElim ? COLORS[activeElim.id].bodyA : pCol.bodyA;
+  ctx.globalAlpha = activeElim ? 0.85 : 0.48;
+  ctx.lineWidth = Math.max(2, L.cell * 0.075);
+  ctx.beginPath();
+  ctx.roundRect(L.bx, L.by, L.size, L.size, L.cell * 0.35);
+  ctx.stroke();
+  ctx.restore();
+
+  // 2. Obstacles & Shrinking Ring
+  const obsSet = battleGame.obstacles;
+  if (obsSet.size > 0) {
+    ctx.save();
+    for (const o of obsSet) {
+      const gx = o % W, gy = (o / W) | 0;
+      const x = L.bx + gx * L.cell, y = L.by + gy * L.cell;
+      ctx.fillStyle = '#070a0f';
+      ctx.beginPath();
+      ctx.roundRect(x + L.cell * 0.04, y + L.cell * 0.04, L.cell * 0.92, L.cell * 0.92, L.cell * 0.14);
+      ctx.fill();
+      ctx.strokeStyle = '#ff4d5a';
+      ctx.globalAlpha = 0.42;
+      ctx.lineWidth = Math.max(1.2, L.cell * 0.06);
+      const m = L.cell * 0.05;
+      ctx.beginPath();
+      if (gy === 0 || !obsSet.has(o - W)) { ctx.moveTo(x + m, y + m); ctx.lineTo(x + L.cell - m, y + m); }
+      if (gy === H - 1 || !obsSet.has(o + W)) { ctx.moveTo(x + m, y + L.cell - m); ctx.lineTo(x + L.cell - m, y + L.cell - m); }
+      if (gx === 0 || !obsSet.has(o - 1)) { ctx.moveTo(x + m, y + m); ctx.lineTo(x + m, y + L.cell - m); }
+      if (gx === W - 1 || !obsSet.has(o + 1)) { ctx.moveTo(x + L.cell - m, y + m); ctx.lineTo(x + L.cell - m, y + L.cell - m); }
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  // 3. Apples
+  const pulse = 1 + Math.sin(ms / 140) * 0.09;
+  for (const apple of battleGame.apples) {
+    const r = L.cell * (apple.golden ? 0.38 : 0.33) * pulse;
+    const ax = cx(apple.cell), ay = cy(apple.cell);
+    const col = apple.golden ? '#ffc93c' : '#ff4d5a';
+    ctx.save();
+    ctx.shadowColor = col;
+    ctx.shadowBlur = L.cell * (apple.golden ? 1.2 : 0.7);
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(ax, ay, r, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  // 4. Snakes
+  const adjacent = (a, b) => {
+    const ax = a % W, ay = (a / W) | 0, bx = b % W, by = (b / W) | 0;
+    return (Math.abs(ax - bx) === 1 && ay === by) || (Math.abs(ay - by) === 1 && ax === bx);
+  };
+
+  for (let sId = 0; sId < 4; sId++) {
+    const sBase = battlePrev[sId] || battleGame.snakes[sId];
+    const sNext = battleGame.snakes[sId];
+    if (!sNext.alive) continue;
+    const colDef = COLORS[sId];
+    const base = sBase.cells;
+    const target = sNext.cells;
+    const n = base.length;
+    if (!n) continue;
+
+    ctx.save();
+    const grad = ctx.createLinearGradient(L.bx, L.by, L.bx + L.size, L.by + L.size);
+    grad.addColorStop(0, colDef.bodyA);
+    grad.addColorStop(1, colDef.bodyB);
+    ctx.fillStyle = grad;
+
+    const tailVacating = target.length === n && target[n - 1] !== base[n - 1];
+    for (let k = 0; k < n - (tailVacating ? 1 : 0); k++) {
+      const cell = base[k];
+      const x = L.bx + (cell % W) * L.cell, y = L.by + ((cell / W) | 0) * L.cell;
+      ctx.beginPath();
+      ctx.roundRect(x + L.cell * 0.08, y + L.cell * 0.08, L.cell * 0.84, L.cell * 0.84, L.cell * 0.26);
+      ctx.fill();
+      if (k + 1 < n && adjacent(base[k], base[k + 1])) {
+        if (tailVacating && k + 1 === n - 1) continue;
+        const a = base[k], b = base[k + 1];
+        const bx0 = L.bx + Math.min(a % W, b % W) * L.cell;
+        const by0 = L.by + Math.min((a / W) | 0, (b / W) | 0) * L.cell;
+        ctx.beginPath();
+        if (((a / W) | 0) === ((b / W) | 0)) {
+          ctx.roundRect(bx0 + L.cell * 0.5, by0 + L.cell * 0.08, L.cell, L.cell * 0.84, L.cell * 0.1);
+        } else {
+          ctx.roundRect(bx0 + L.cell * 0.08, by0 + L.cell * 0.5, L.cell * 0.84, L.cell, L.cell * 0.1);
+        }
+        ctx.fill();
+      }
+    }
+
+    if (tailVacating && n >= 2) {
+      const t = base[n - 1], into = base[n - 2];
+      const ix = cx(into), iy = cy(into);
+      let tx = cx(t), ty = cy(t);
+      if (adjacent(t, into)) {
+        tx += (ix - tx) * f;
+        ty += (iy - ty) * f;
+        ctx.beginPath();
+        ctx.roundRect(
+          Math.min(tx, ix) - L.cell * 0.42,
+          Math.min(ty, iy) - L.cell * 0.42,
+          Math.abs(tx - ix) + L.cell * 0.84,
+          Math.abs(ty - iy) + L.cell * 0.84,
+          L.cell * 0.26
+        );
+        ctx.fill();
+      }
+    }
+
+    const from = base[0], to = target[0];
+    const fx = cx(from), fy = cy(from);
+    let hx = fx, hy = fy;
+    if (adjacent(from, to)) {
+      hx += (cx(to) - fx) * f;
+      hy += (cy(to) - fy) * f;
+      ctx.beginPath();
+      ctx.roundRect(
+        Math.min(fx, hx) - L.cell * 0.42,
+        Math.min(fy, hy) - L.cell * 0.42,
+        Math.abs(hx - fx) + L.cell * 0.84,
+        Math.abs(hy - fy) + L.cell * 0.84,
+        L.cell * 0.26
+      );
+      ctx.fill();
+    }
+
+    ctx.shadowColor = colDef.bodyA;
+    ctx.shadowBlur = L.cell * 0.85;
+    ctx.fillStyle = colDef.head;
+    ctx.beginPath();
+    ctx.roundRect(hx - L.cell * 0.44, hy - L.cell * 0.44, L.cell * 0.88, L.cell * 0.88, L.cell * 0.28);
+    ctx.fill();
+
+    // Highlight player's snake head with a pulsing beacon ring
+    if (sId === playerColor) {
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = Math.max(1.8, L.cell * 0.09);
+      ctx.beginPath();
+      ctx.arc(hx, hy, L.cell * 0.58, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 5. Elimination Shatter Particles
+  for (const el of battleElimEvents) {
+    const age = ms - el.ms;
+    if (age < 0 || age > 850) continue;
+    const t = age / 850;
+    const ease = 1 - (1 - t) ** 2;
+    const alpha = (1 - t) ** 1.3;
+    const col = COLORS[el.id]?.bodyA || '#ff4d5a';
+    ctx.save();
+    ctx.fillStyle = col;
+    ctx.globalAlpha = alpha;
+    for (let idx = 0; idx < (el.droppedCells || []).length; idx++) {
+      const cell = el.droppedCells[idx];
+      const ox = cx(cell), oy = cy(cell);
+      for (let p = 0; p < 4; p++) {
+        const ang = (p / 4) * Math.PI * 2 + idx * 0.5;
+        const dist = L.cell * (0.2 + 0.75 * ease);
+        ctx.beginPath();
+        ctx.arc(ox + Math.cos(ang) * dist, oy + Math.sin(ang) * dist, Math.max(1.4, L.cell * 0.11 * (1 - t)), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // 6. Top Header & 4-Color Scoreboard Cards
+  const cxm = L.W / 2;
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffc93c';
+  ctx.font = `800 ${Math.round(L.W * 0.026)}px ui-sans-serif, system-ui, sans-serif`;
+  if (!battleGame.snakes[playerColor].alive && battleGame.winner === null) {
+    ctx.fillText('YOU WERE ELIMINATED · RESOLVING FINAL DUEL...', cxm, Math.round(L.H * 0.045));
+  } else if (activeElim) {
+    ctx.fillText(`⚡ ${activeElim.name} ELIMINATED! (2× SLOW-MO)`, cxm, Math.round(L.H * 0.045));
+  } else {
+    ctx.fillText(`4-COLOR ARENA · YOU ARE ${COLORS[playerColor].name}`, cxm, Math.round(L.H * 0.045));
+  }
+  ctx.restore();
+
+  const gap = Math.round(L.W * 0.016);
+  const cardW = Math.floor((L.size - gap * 3) / 4);
+  const cardH = Math.round(L.H * 0.064);
+  const cardY = L.by - cardH - Math.round(L.H * 0.016);
+  let maxLen = 0;
+  for (const s of battleGame.snakes) if (s.alive && s.cells.length > maxLen) maxLen = s.cells.length;
+
+  for (let i = 0; i < 4; i++) {
+    const s = battleGame.snakes[i];
+    const col = COLORS[i];
+    const x = L.bx + i * (cardW + gap);
+    const isPlayer = i === playerColor;
+    const isLeader = s.alive && s.cells.length === maxLen;
+
+    ctx.save();
+    ctx.globalAlpha = s.alive ? 1 : 0.4;
+    ctx.fillStyle = '#111824';
+    ctx.beginPath(); ctx.roundRect(x, cardY, cardW, cardH, 10); ctx.fill();
+    ctx.strokeStyle = isPlayer ? col.bodyA : (isLeader ? '#ffc93c' : '#223044');
+    ctx.lineWidth = isPlayer ? 2.5 : 1.5;
+    ctx.beginPath(); ctx.roundRect(x, cardY, cardW, cardH, 10); ctx.stroke();
+
+    ctx.fillStyle = col.bodyA;
+    ctx.beginPath(); ctx.roundRect(x + 7, cardY + 9, 6, cardH - 18, 3); ctx.fill();
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = isPlayer ? col.head : '#7c8b9e';
+    ctx.font = `800 ${Math.round(L.W * 0.019)}px ui-sans-serif, system-ui, sans-serif`;
+    const tag = isPlayer ? `${col.name} (YOU)` : (isLeader ? `${col.name} 👑` : col.name);
+    ctx.fillText(tag, x + 18, cardY + Math.round(cardH * 0.42), cardW - 22);
+
+    ctx.fillStyle = s.alive ? '#edf2f8' : '#ff4d5a';
+    ctx.font = `800 ${Math.round(L.W * 0.030)}px ui-monospace, monospace`;
+    ctx.fillText(s.alive ? String(s.cells.length) : 'OUT', x + 18, cardY + Math.round(cardH * 0.82));
+    ctx.restore();
+  }
+
+  // 7. Relative 4-Color Power Bar below the board
+  const alive = battleGame.aliveSnakes();
+  const totalLen = alive.reduce((acc, s) => acc + s.cells.length, 0) || 1;
+  const barY = L.by + L.size + Math.round(L.H * 0.018);
+  const barH = Math.round(L.H * 0.014);
+  let curX = L.bx;
+  for (let k = 0; k < alive.length; k++) {
+    const s = alive[k];
+    const w = k === alive.length - 1 ? (L.bx + L.size - curX) : Math.round((s.cells.length / totalLen) * L.size);
+    ctx.fillStyle = COLORS[s.id].bodyA;
+    ctx.beginPath();
+    ctx.roundRect(curX, barY, Math.max(4, w - 3), barH, barH / 2);
+    ctx.fill();
+    curX += w;
+  }
+
+  // 8. Mobile Keypad Tap Controls
+  painter.drawKeys(L, lamps);
+}
+
+function finishBattle() {
+  running = false;
+  const pSnake = battleGame.snakes[playerColor];
+  const wSnake = battleGame.snakes[battleGame.winner];
+  const won = battleGame.winner === playerColor;
+
+  let placement = 1;
+  if (!won) {
+    const elimIdx = battleGame.eliminations.findIndex((e) => e.id === playerColor);
+    placement = elimIdx >= 0 ? (4 - elimIdx) : 2;
+  }
+
+  const wins = Number(localStorage.getItem('si.battle.wins') || 0) + (won ? 1 : 0);
+  const bestLen = Math.max(Number(localStorage.getItem('si.battle.bestLen') || 0), pSnake.cells.length);
+  localStorage.setItem('si.battle.wins', String(wins));
+  localStorage.setItem('si.battle.bestLen', String(bestLen));
+
+  lastBattleSummary = {
+    won,
+    placement,
+    playerName: pSnake.name,
+    playerLen: pSnake.cells.length,
+    playerKills: pSnake.kills,
+    winnerName: wSnake.name,
+    winnerLen: wSnake.cells.length,
+    seed: battleGame.seed,
+  };
+
+  playEnd(won);
+  document.getElementById('verdict').textContent = won
+    ? `🏆 ${pSnake.name} WINS THE ARENA!`
+    : `${wSnake.name} WINS · YOU PLACED #${placement}`;
+  const pctEl = document.getElementById('pct');
+  pctEl.textContent = won ? 'CHAMPION 👑' : `#${placement} PLACE`;
+  pctEl.style.color = won ? COLORS[playerColor].bodyA : COLORS[battleGame.winner].bodyA;
+  document.getElementById('note').innerHTML =
+    `You picked <b>${pSnake.name}</b> — Length <b>${pSnake.cells.length}</b> · Kills <b>${pSnake.kills}</b>.<br>` +
+    `Arena Champion: <b>${wSnake.name}</b> (${wSnake.cells.length} squares) · Seed #${battleGame.seed}`;
+  document.getElementById('copy-score').textContent = 'Copy Battle Result for YouTube Comments 📋';
+  document.getElementById('over').classList.add('on');
+  document.getElementById('again').focus();
+  showBest();
+}
+
 function finish() {
   running = false;
   const pct = game.snake.length / game.capacity;
@@ -265,7 +727,9 @@ function finish() {
   const won = game.fullAtTick !== null;
   playEnd(won);
   document.getElementById('verdict').textContent = won ? '100% BOARD COMPLETE' : 'RUN ENDED';
-  document.getElementById('pct').textContent = `${(pct * 100).toFixed(1)}%`;
+  const pctEl = document.getElementById('pct');
+  pctEl.style.color = 'var(--accent)';
+  pctEl.textContent = `${(pct * 100).toFixed(1)}%`;
   const arenaLabel = game.__stage?.arenaName || STAGES[stageId]?.arenaName || (stageId >= 4 ? 'FOUR PILLARS' : 'CLASSIC GRID');
   document.getElementById('note').innerHTML = won
     ? `You conquered <b>${arenaLabel}</b> (${game.capacity}/${game.capacity} squares)! Copy your score and post it in the YouTube comments.`
@@ -276,6 +740,13 @@ function finish() {
 }
 
 function showBest() {
+  if (mode === 'battle') {
+    const wins = Number(localStorage.getItem('si.battle.wins') || 0);
+    const bestLen = Number(localStorage.getItem('si.battle.bestLen') || 0);
+    document.getElementById('best').textContent =
+      `Battle Wins: ${wins} 🏆  ·  Best Length: ${bestLen}  ·  18×18 Shrinking Arena`;
+    return;
+  }
   const b = Number(localStorage.getItem(`si.best.${stageId}`) || 0);
   const arenaLabel = game?.__stage?.arenaName || STAGES[stageId]?.arenaName || (stageId >= 4 ? 'FOUR PILLARS' : 'CLASSIC GRID');
   document.getElementById('best').textContent =
@@ -292,8 +763,8 @@ function paintStages() {
   for (const id of [1, 2, 3, 4, 5]) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = (id === activeTab && game?.__stage?.title) ? game.__stage.title : STAGES[id].title;
-    b.setAttribute('aria-pressed', String(id === stageId && !arenaOverride));
+    b.textContent = (mode === 'solo' && id === activeTab && game?.__stage?.title) ? game.__stage.title : STAGES[id].title;
+    b.setAttribute('aria-pressed', String(mode === 'solo' && id === stageId && !arenaOverride));
     b.onclick = () => { arenaOverride = null; start(id, false); };
     host.appendChild(b);
   }
@@ -307,7 +778,7 @@ function paintArenas() {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = def.name;
-    b.setAttribute('aria-pressed', String(k === activeArena));
+    b.setAttribute('aria-pressed', String(mode === 'solo' && k === activeArena));
     b.onclick = () => {
       if (ARENA_STAGE[k]) {
         arenaOverride = null;
@@ -322,6 +793,36 @@ function paintArenas() {
         arenaOverride = k;
         start(stageId > 5 ? 3 : stageId, false);
       }
+    };
+    host.appendChild(b);
+  }
+}
+
+function paintBattleColors() {
+  const host = document.getElementById('battle-colors');
+  host.innerHTML = '';
+  const lbl = document.createElement('span');
+  lbl.className = 'color-label';
+  lbl.textContent = 'Pick Your Color:';
+  host.appendChild(lbl);
+
+  const dots = ['🔴', '🟣', '🟡', '🔵'];
+  for (let i = 0; i < COLORS.length; i++) {
+    const col = COLORS[i];
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = `${dots[i]} ${col.name}`;
+    const active = i === playerColor;
+    b.setAttribute('aria-pressed', String(active));
+    if (active) {
+      b.style.background = col.bodyA;
+      b.style.borderColor = col.bodyA;
+      b.style.color = '#080b11';
+    }
+    b.onclick = () => {
+      playerColor = i;
+      localStorage.setItem('si.color', String(i));
+      startBattle(lockedSeed !== null);
     };
     host.appendChild(b);
   }
@@ -342,7 +843,8 @@ addEventListener('keydown', (e) => {
   if (!running) {
     if ((e.key === 'Escape' || e.key === 'Enter') && document.getElementById('over').classList.contains('on')) {
       e.preventDefault();
-      start(stageId, lockedSeed !== null || lockedCycle !== null);
+      if (mode === 'battle') startBattle(lockedSeed !== null);
+      else start(stageId, lockedSeed !== null || lockedCycle !== null);
     }
     return;
   }
@@ -382,10 +884,18 @@ canvas.addEventListener('pointercancel', () => { pointerStart = null; });
 canvas.addEventListener('lostpointercapture', () => { pointerStart = null; });
 
 document.getElementById('copy-score').onclick = async () => {
-  const pct = ((game.snake.length / game.capacity) * 100).toFixed(1);
-  const stageTitle = game.__stage?.title || STAGES[stageId].title;
-  const challengeTag = (lockedSeed !== null || lockedCycle !== null) ? ` (Video Seed #${game.__runSeed})` : '';
-  const text = `🐍 I reached ${pct}% (${game.snake.length}/${game.capacity} squares) on ${stageTitle}${challengeTag}! Can anyone beat this?`;
+  let text;
+  if (mode === 'battle' && lastBattleSummary) {
+    const s = lastBattleSummary;
+    text = s.won
+      ? `🐍⚔️ I picked ${s.playerName} and WON the 4-Color Battle Arena (Length ${s.playerLen}, ${s.playerKills} kills, Seed #${s.seed})! Which color did you pick?`
+      : `🐍⚔️ I picked ${s.playerName} in the 4-Color Battle Arena — placed #${s.placement} (Length ${s.playerLen}, ${s.playerKills} kills, Seed #${s.seed}), ${s.winnerName} took the crown! Which color did you pick?`;
+  } else {
+    const pct = ((game.snake.length / game.capacity) * 100).toFixed(1);
+    const stageTitle = game.__stage?.title || STAGES[stageId].title;
+    const challengeTag = (lockedSeed !== null || lockedCycle !== null) ? ` (Video Seed #${game.__runSeed})` : '';
+    text = `🐍 I reached ${pct}% (${game.snake.length}/${game.capacity} squares) on ${stageTitle}${challengeTag}! Can anyone beat this?`;
+  }
   try {
     await navigator.clipboard.writeText(text);
   } catch {
@@ -399,10 +909,14 @@ document.getElementById('copy-score').onclick = async () => {
   document.getElementById('copy-score').textContent = 'Copied! Paste in YouTube Comments ✅';
 };
 
-document.getElementById('again').onclick = () => start(stageId, lockedSeed !== null || lockedCycle !== null);
+document.getElementById('again').onclick = () => {
+  if (mode === 'battle') startBattle(lockedSeed !== null);
+  else start(stageId, lockedSeed !== null || lockedCycle !== null);
+};
 addEventListener('resize', () => { fit(); });
 fit();
-start(stageId, true);
+if (mode === 'battle') startBattle(true);
+else start(stageId, true);
 </script>
 </body>
 </html>
