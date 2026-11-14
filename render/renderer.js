@@ -609,8 +609,37 @@ export class Painter {
     ctx.textBaseline = 'alphabetic';
   }
 
+  // Big hook: a dimmed board with a large two-line question, for the first ~1.8s.
+  // Only used when the render is asked for it (&hookstyle=...), so every existing
+  // render stays byte-for-byte what it was.
+  drawBigHook(L, hook, ms) {
+    const fade = Math.min(1, (hook.untilMs - ms) / 350);
+    const { ctx } = this;
+    const cx = L.bx + L.size / 2, cy = L.by + L.size / 2;
+    ctx.save();
+    ctx.globalAlpha = fade * 0.62;
+    ctx.fillStyle = '#05070c';
+    ctx.fillRect(L.bx, L.by, L.size, L.size);
+    ctx.globalAlpha = fade;
+    ctx.textAlign = 'center';
+    const maxW = Math.round(L.size * 0.88);
+    const lines = hook.big;
+    const fs = Math.round(L.size * 0.105);
+    ctx.font = `900 ${fs}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.shadowColor = 'rgba(0,0,0,0.85)';
+    ctx.shadowBlur = Math.round(fs * 0.25);
+    let y = cy - ((lines.length - 1) * fs * 1.12) / 2;
+    lines.forEach((t, k) => {
+      ctx.fillStyle = k === lines.length - 1 ? this.theme.accent : this.theme.text;
+      ctx.fillText(t, cx, y, maxW);
+      y += fs * 1.12;
+    });
+    ctx.restore();
+  }
+
   drawHook(L, hook, ms) {
     if (ms > hook.untilMs) return;
+    if (hook.big) { this.drawBigHook(L, hook, ms); return; }
     const fade = Math.min(1, (hook.untilMs - ms) / 350);
     const { ctx } = this;
     const unit = L.vertical ? L.W : L.W - L.bx - L.size;
