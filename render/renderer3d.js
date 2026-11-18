@@ -152,6 +152,42 @@ export const BIOMES_3D = {
     ambientIntensity: 0.88,
     keyIntensity: 1.75,
   },
+  colosseum: {
+    key: 'colosseum',
+    name: 'BASALT COLOSSEUM',
+    light: false,
+    bgTop: '#161922',
+    bgMid: '#10141c',
+    bgBot: '#090b10',
+    plinthColor: 0x0b0d14,
+    slabColor: 0x181c26,
+    frameColor: 0xf59e0b,
+    wrapFrameColor: 0xd97706,
+    tileA: 0x202634,
+    tileB: 0x181c26,
+    obstacleBase: 0x0f1219,
+    obstacleCap: 0xb45309,
+    obstacleEmissive: 0x451a03,
+    snakeHead: 0xfef08a,
+    snakeA: 0xf59e0b,
+    snakeMid: 0xd97706,
+    snakeB: 0x78350f,
+    appleColor: 0xef4444,
+    goldenColor: 0xfbbf24,
+    moverColor: 0xf59e0b,
+    hudCard: 'rgba(10, 12, 18, 0.90)',
+    hudBorder: 'rgba(245, 158, 11, 0.65)',
+    hudText: '#f8fafc',
+    hudMuted: '#cbd5e1',
+    accentCss: '#f59e0b',
+    accentBrightCss: '#fbbf24',
+    goldCss: '#fde047',
+    dangerCss: '#fb7185',
+    skyLight: 0xfef3c7,
+    groundLight: 0x334155,
+    ambientIntensity: 0.85,
+    keyIntensity: 1.80,
+  },
 };
 
 export const STAGE_BIOME = {
@@ -166,7 +202,8 @@ export const STAGE_BIOME = {
   9: 'sunset',
 };
 
-function makeRoundedPillGeometry(w = 0.82, h = 0.56, d = 0.82, r = 0.17, bevel = 0.09) {
+/** Builds a beveled rounded-box BufferGeometry for tiles, segments, and key housings. */
+export function makeRoundedPillGeometry(w = 0.82, h = 0.56, d = 0.82, r = 0.17, bevel = 0.09) {
   const hw = w / 2 - bevel;
   const hd = d / 2 - bevel;
   const rr = Math.min(r, hw * 0.8, hd * 0.8);
@@ -196,15 +233,229 @@ function makeRoundedPillGeometry(w = 0.82, h = 0.56, d = 0.82, r = 0.17, bevel =
   return geo;
 }
 
-function hash01(seed) {
+/** Builds a procedural 3-panel softbox PMREM reflection map for glossy clearcoat materials. */
+export function buildStudioSoftboxes(webgl, b) {
+  const pmrem = new THREE.PMREMGenerator(webgl);
+  const envScene = new THREE.Scene();
+  envScene.background = new THREE.Color(b.light ? 0x2a3342 : 0x0b101b);
+  const addPanel = (col, x, y, z, rx, ry, rz, sx, sy) => {
+    const panel = new THREE.Mesh(
+      new THREE.PlaneGeometry(sx, sy),
+      new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide })
+    );
+    panel.position.set(x, y, z);
+    panel.rotation.set(rx, ry, rz);
+    envScene.add(panel);
+  };
+  addPanel(0xffffff, 0, 14, 2, Math.PI / 2, 0, 0, 18, 12);
+  addPanel(b.wrapFrameColor, -12, 6, -4, 0, Math.PI / 2, 0, 14, 10);
+  addPanel(b.goldenColor, 12, 6, 6, 0, -Math.PI / 2, 0, 12, 10);
+  const envRT = pmrem.fromScene(envScene, 0.04);
+  pmrem.dispose();
+  return envRT;
+}
+
+/** Preloads a tabletop studio JPEG plate asynchronously for seamless capture/web startup. */
+export function loadBiomeBackdrop(biomeKey) {
+  if (typeof Image === 'undefined') return { img: null, ready: Promise.resolve() };
+  const img = new Image();
+  const ready = new Promise((resolve) => {
+    img.onload = () => resolve();
+    img.onerror = () => resolve();
+  });
+  img.src = new URL(`./assets/backdrops/${biomeKey}.jpg`, import.meta.url).href;
+  return { img, ready };
+}
+
+/** Draws the cover-fitted tabletop backdrop + soft vignette (with fallback studio gradient). */
+export function drawBiomeBackdrop(ctx, img, biome, W, H) {
+  if (img && img.complete && img.naturalWidth > 0) {
+    const iw = img.naturalWidth;
+    const ih = img.naturalHeight;
+    const sc = Math.max(W / iw, H / ih);
+    const dw = iw * sc;
+    const dh = ih * sc;
+    ctx.drawImage(img, (W - dw) * 0.5, (H - dh) * 0.5, dw, dh);
+
+    const topAlpha = biome.key === 'alabaster' ? 0.18 : 0.34;
+    const botAlpha = biome.key === 'alabaster' ? 0.20 : 0.38;
+    const tg = ctx.createLinearGradient(0, 0, 0, H * 0.24);
+    tg.addColorStop(0, `rgba(6,10,18,${topAlpha})`);
+    tg.addColorStop(1, 'rgba(6,10,18,0)');
+    ctx.fillStyle = tg;
+    ctx.fillRect(0, 0, W, H * 0.24);
+
+    const bg = ctx.createLinearGradient(0, H * 0.80, 0, H);
+    bg.addColorStop(0, 'rgba(6,10,18,0)');
+    bg.addColorStop(1, `rgba(6,10,18,${botAlpha})`);
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, H * 0.80, W, H * 0.20);
+    return;
+  }
+
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, biome.bgTop);
+  g.addColorStop(0.55, biome.bgMid);
+  g.addColorStop(1, biome.bgBot);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  const rg = ctx.createRadialGradient(W * 0.5, H * 0.44, W * 0.05, W * 0.5, H * 0.46, Math.max(W, H) * 0.56);
+  rg.addColorStop(0, biome.light ? 'rgba(255,255,255,0.58)' : 'rgba(255,255,255,0.08)');
+  rg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = rg;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/** Projects 3D keycap cluster anchors into 2D canvas hit boxes [dir, x, y, kw]. */
+export function projectKeyRects(canvas, camera, keyCaps, projVec) {
+  const W = canvas.width, H = canvas.height;
+  const vertical = H > W * 1.2;
+  const kw = Math.max(26, Math.round(vertical ? W * 0.088 : Math.min(W * 0.06, 64)));
+  camera.updateMatrixWorld();
+  const out = [];
+  for (const cap of keyCaps || []) {
+    projVec.copy(cap.worldPos).project(camera);
+    const px = (projVec.x * 0.5 + 0.5) * W;
+    const py = (-projVec.y * 0.5 + 0.5) * H;
+    out.push([cap.dir, px - kw / 2, py - kw / 2, kw]);
+  }
+  return out;
+}
+
+/** Builds the 3D inverted-T mechanical RGB keycap macro-pad south of the board. */
+export function buildKeycapCluster(scene, width, height, plinthColor, accentColorHex, isLight = false) {
+  const padScale = Math.max(width, height) / 12;
+  const zPad = height / 2 + 0.65 + 1.85 * padScale;
+  const step = 1.08 * padScale;
+
+  const keyPadGroup = new THREE.Group();
+  const housingGeo = makeRoundedPillGeometry(3.85 * padScale, 0.34 * padScale, 2.48 * padScale, 0.30 * padScale, 0.06 * padScale);
+  const housingMat = new THREE.MeshStandardMaterial({
+    color: plinthColor,
+    roughness: 0.42,
+    metalness: 0.38,
+  });
+  const housing = new THREE.Mesh(housingGeo, housingMat);
+  housing.position.set(0, -0.42, zPad);
+  housing.castShadow = true;
+  housing.receiveShadow = true;
+  keyPadGroup.add(housing);
+
+  const arrowRadius = 0.17 * padScale;
+  const arrowShape = new THREE.Shape();
+  arrowShape.moveTo(0, arrowRadius);
+  arrowShape.lineTo(arrowRadius * 0.86, -arrowRadius * 0.68);
+  arrowShape.lineTo(-arrowRadius * 0.86, -arrowRadius * 0.68);
+  arrowShape.closePath();
+  const arrowGeo = new THREE.ExtrudeGeometry(arrowShape, {
+    depth: 0.055 * padScale,
+    bevelEnabled: false,
+  });
+  arrowGeo.rotateX(-Math.PI / 2);
+
+  const stemGeo = new THREE.BoxGeometry(0.78 * padScale, 0.22 * padScale, 0.78 * padScale);
+  const capGeo = makeKeycapGeometry(THREE, padScale);
+
+  const topY = -0.42 + 0.17 * padScale;
+  const restY = topY + 0.28 * padScale;
+  const capColorHex = isLight ? 0x1e293b : 0x1b2333;
+
+  const specs = [
+    ['up', 0, 0, zPad - 0.54 * padScale, 0],
+    ['right', 1, step, zPad + 0.54 * padScale, -Math.PI / 2],
+    ['down', 2, 0, zPad + 0.54 * padScale, Math.PI],
+    ['left', 3, -step, zPad + 0.54 * padScale, Math.PI / 2],
+  ];
+
+  const keyCaps = [];
+  for (const [name, dir, kx, kz, rotY] of specs) {
+    const stemMat = new THREE.MeshStandardMaterial({
+      color: accentColorHex,
+      emissive: accentColorHex,
+      emissiveIntensity: 0.3,
+      roughness: 0.25,
+    });
+    const stem = new THREE.Mesh(stemGeo, stemMat);
+    stem.position.set(kx, topY + 0.06 * padScale, kz);
+    keyPadGroup.add(stem);
+
+    const capGroup = new THREE.Group();
+    capGroup.position.set(kx, restY, kz);
+
+    const capMat = new THREE.MeshPhysicalMaterial({
+      color: capColorHex,
+      emissive: accentColorHex,
+      emissiveIntensity: 0.05,
+      roughness: 0.22,
+      metalness: 0.14,
+      clearcoat: 0.9,
+      clearcoatRoughness: 0.10,
+    });
+    const capMesh = new THREE.Mesh(capGeo, capMat);
+    capMesh.castShadow = true;
+    capMesh.receiveShadow = true;
+
+    const arrowMat = new THREE.MeshStandardMaterial({
+      color: 0xcbd5e1,
+      emissive: accentColorHex,
+      emissiveIntensity: 0.25,
+      roughness: 0.2,
+    });
+    const arrowMesh = new THREE.Mesh(arrowGeo, arrowMat);
+    arrowMesh.position.set(0, 0.184 * padScale, 0);
+    arrowMesh.rotation.y = rotY;
+
+    capGroup.add(capMesh, arrowMesh);
+    keyPadGroup.add(capGroup);
+
+    keyCaps.push({
+      name,
+      dir,
+      kx,
+      kz,
+      restY,
+      travel: 0.19 * padScale,
+      capGroup,
+      capMat,
+      stemMat,
+      arrowMat,
+      worldPos: new THREE.Vector3(kx, restY, kz),
+    });
+  }
+
+  scene.add(keyPadGroup);
+  return {
+    keyPadGroup,
+    keyCaps,
+    keyBaseColor: new THREE.Color(capColorHex),
+  };
+}
+
+/** Animates keycap depress travel and RGB emissive state from normalized keyLights map. */
+export function updateKeycapCluster(keyCaps, keyLights, keyBaseColor, keyActiveColor, keyLegendRest, keyLegendHot) {
+  if (!keyCaps || !keyCaps.length) return;
+  const lights = keyLights || NO_KEYS;
+  for (const cap of keyCaps) {
+    const lit = lights[cap.name] || 0;
+    cap.capGroup.position.y = cap.restY - cap.travel * lit;
+    cap.stemMat.emissiveIntensity = 0.30 + 2.2 * lit;
+    cap.capMat.color.copy(keyBaseColor).lerp(keyActiveColor, lit * 0.85);
+    cap.capMat.emissiveIntensity = 0.05 + 0.45 * lit;
+    cap.arrowMat.color.copy(keyLegendRest).lerp(keyLegendHot, lit);
+    cap.arrowMat.emissiveIntensity = 0.25 + 1.35 * lit;
+  }
+}
+
+export function hash01(seed) {
   let x = (seed ^ 0x9e3779b9) >>> 0;
   x = Math.imul(x ^ (x >>> 16), 0x85ebca6b) >>> 0;
   x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35) >>> 0;
   return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
 }
 
-function lerp(a, b, t) { return a + (b - a) * t; }
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+export function lerp(a, b, t) { return a + (b - a) * t; }
+export function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 /**
  * Shared 3D board & snake painter driving both offline video capture and live play.
@@ -237,16 +488,9 @@ export class Painter3D {
     this._cDanger = new THREE.Color(0xef4444);
     this._envRT = null;
 
-    this._bgImg = null;
-    this._bgReady = Promise.resolve();
-    if (typeof Image !== 'undefined') {
-      this._bgImg = new Image();
-      this._bgReady = new Promise((resolve) => {
-        this._bgImg.onload = () => resolve();
-        this._bgImg.onerror = () => resolve();
-      });
-      this._bgImg.src = new URL(`./assets/backdrops/${this.biome.key}.jpg`, import.meta.url).href;
-    }
+    const bg = loadBiomeBackdrop(this.biome.key);
+    this._bgImg = bg.img;
+    this._bgReady = bg.ready;
 
     this._bloomCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
     this._bloomCtx = this._bloomCanvas ? this._bloomCanvas.getContext('2d') : null;
@@ -304,25 +548,8 @@ export class Painter3D {
   _buildLights() {
     const b = this.biome;
 
-    // Procedural studio softboxes environment map for clearcoat reflections
-    const pmrem = new THREE.PMREMGenerator(this.webgl);
-    const envScene = new THREE.Scene();
-    envScene.background = new THREE.Color(b.light ? 0x2a3342 : 0x0b101b);
-    const addPanel = (col, x, y, z, rx, ry, rz, sx, sy) => {
-      const panel = new THREE.Mesh(
-        new THREE.PlaneGeometry(sx, sy),
-        new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide })
-      );
-      panel.position.set(x, y, z);
-      panel.rotation.set(rx, ry, rz);
-      envScene.add(panel);
-    };
-    addPanel(0xffffff, 0, 14, 2, Math.PI / 2, 0, 0, 18, 12);
-    addPanel(b.wrapFrameColor, -12, 6, -4, 0, Math.PI / 2, 0, 14, 10);
-    addPanel(b.goldenColor, 12, 6, 6, 0, -Math.PI / 2, 0, 12, 10);
-    this._envRT = pmrem.fromScene(envScene, 0.04);
+    this._envRT = buildStudioSoftboxes(this.webgl, b);
     this.scene.environment = this._envRT.texture;
-    pmrem.dispose();
 
     const hemi = new THREE.HemisphereLight(b.skyLight, b.groundLight, b.ambientIntensity);
     this.scene.add(hemi);
@@ -695,112 +922,13 @@ export class Painter3D {
   _buildKeycapCluster() {
     const W = this.m.width, H = this.m.height;
     const b = this.biome;
-    const padScale = Math.max(W, H) / 12;
-    const zPad = H / 2 + 0.65 + 1.85 * padScale;
-    const step = 1.08 * padScale;
-
-    this.keyPadGroup = new THREE.Group();
-    const housingGeo = makeRoundedPillGeometry(3.85 * padScale, 0.34 * padScale, 2.48 * padScale, 0.30 * padScale, 0.06 * padScale);
-    const housingMat = new THREE.MeshStandardMaterial({
-      color: b.plinthColor,
-      roughness: 0.42,
-      metalness: 0.38,
-    });
-    const housing = new THREE.Mesh(housingGeo, housingMat);
-    housing.position.set(0, -0.42, zPad);
-    housing.castShadow = true;
-    housing.receiveShadow = true;
-    this.keyPadGroup.add(housing);
-
-    const arrowRadius = 0.17 * padScale;
-    const arrowShape = new THREE.Shape();
-    arrowShape.moveTo(0, arrowRadius);
-    arrowShape.lineTo(arrowRadius * 0.86, -arrowRadius * 0.68);
-    arrowShape.lineTo(-arrowRadius * 0.86, -arrowRadius * 0.68);
-    arrowShape.closePath();
-    const arrowGeo = new THREE.ExtrudeGeometry(arrowShape, {
-      depth: 0.055 * padScale,
-      bevelEnabled: false,
-    });
-    arrowGeo.rotateX(-Math.PI / 2);
-
-    const stemGeo = new THREE.BoxGeometry(0.78 * padScale, 0.22 * padScale, 0.78 * padScale);
-    const capGeo = makeKeycapGeometry(THREE, padScale);
-
-    const topY = -0.42 + 0.17 * padScale;
-    const restY = topY + 0.28 * padScale;
-    const capColorHex = b.light ? 0x1e293b : 0x1b2333;
-    const accentColorHex = b.frameColor;
-
-    const specs = [
-      ['up', 0, 0, zPad - 0.54 * padScale, 0],
-      ['right', 1, step, zPad + 0.54 * padScale, -Math.PI / 2],
-      ['down', 2, 0, zPad + 0.54 * padScale, Math.PI],
-      ['left', 3, -step, zPad + 0.54 * padScale, Math.PI / 2],
-    ];
-
-    this.keyCaps = [];
-    this._keyBaseColor = new THREE.Color(capColorHex);
+    const pad = buildKeycapCluster(this.scene, W, H, b.plinthColor, b.frameColor, b.light);
+    this.keyPadGroup = pad.keyPadGroup;
+    this.keyCaps = pad.keyCaps;
+    this._keyBaseColor = pad.keyBaseColor;
     this._keyActiveColor = new THREE.Color(b.accentCss);
     this._keyLegendRest = new THREE.Color(0xcbd5e1);
     this._keyLegendHot = new THREE.Color(0xffffff);
-
-    for (const [name, dir, kx, kz, rotY] of specs) {
-      const stemMat = new THREE.MeshStandardMaterial({
-        color: accentColorHex,
-        emissive: accentColorHex,
-        emissiveIntensity: 0.3,
-        roughness: 0.25,
-      });
-      const stem = new THREE.Mesh(stemGeo, stemMat);
-      stem.position.set(kx, topY + 0.06 * padScale, kz);
-      this.keyPadGroup.add(stem);
-
-      const capGroup = new THREE.Group();
-      capGroup.position.set(kx, restY, kz);
-
-      const capMat = new THREE.MeshPhysicalMaterial({
-        color: capColorHex,
-        emissive: accentColorHex,
-        emissiveIntensity: 0.05,
-        roughness: 0.22,
-        metalness: 0.14,
-        clearcoat: 0.9,
-        clearcoatRoughness: 0.10,
-      });
-      const capMesh = new THREE.Mesh(capGeo, capMat);
-      capMesh.castShadow = true;
-      capMesh.receiveShadow = true;
-
-      const arrowMat = new THREE.MeshStandardMaterial({
-        color: 0xcbd5e1,
-        emissive: accentColorHex,
-        emissiveIntensity: 0.25,
-        roughness: 0.2,
-      });
-      const arrowMesh = new THREE.Mesh(arrowGeo, arrowMat);
-      arrowMesh.position.set(0, 0.184 * padScale, 0);
-      arrowMesh.rotation.y = rotY;
-
-      capGroup.add(capMesh, arrowMesh);
-      this.keyPadGroup.add(capGroup);
-
-      this.keyCaps.push({
-        name,
-        dir,
-        kx,
-        kz,
-        restY,
-        travel: 0.19 * padScale,
-        capGroup,
-        capMat,
-        stemMat,
-        arrowMat,
-        worldPos: new THREE.Vector3(kx, restY, kz),
-      });
-    }
-
-    this.scene.add(this.keyPadGroup);
   }
 
   _updateTiles(frame, nmFactor, ms) {
@@ -1219,17 +1347,7 @@ export class Painter3D {
   }
 
   _updateKeycapCluster(frame) {
-    if (!this.keyCaps || !this.keyCaps.length) return;
-    const lights = frame.keyLights || NO_KEYS;
-    for (const cap of this.keyCaps) {
-      const lit = lights[cap.name] || 0;
-      cap.capGroup.position.y = cap.restY - cap.travel * lit;
-      cap.stemMat.emissiveIntensity = 0.30 + 2.2 * lit;
-      cap.capMat.color.copy(this._keyBaseColor).lerp(this._keyActiveColor, lit * 0.85);
-      cap.capMat.emissiveIntensity = 0.05 + 0.45 * lit;
-      cap.arrowMat.color.copy(this._keyLegendRest).lerp(this._keyLegendHot, lit);
-      cap.arrowMat.emissiveIntensity = 0.25 + 1.35 * lit;
-    }
+    updateKeycapCluster(this.keyCaps, frame.keyLights, this._keyBaseColor, this._keyActiveColor, this._keyLegendRest, this._keyLegendHot);
   }
 
   _updateCamera(frame, W, H, nmFactor, ms) {
@@ -1292,44 +1410,7 @@ export class Painter3D {
   }
 
   _drawBackdrop(W, H) {
-    const { ctx, biome } = this;
-    if (this._bgImg && this._bgImg.complete && this._bgImg.naturalWidth > 0) {
-      const iw = this._bgImg.naturalWidth;
-      const ih = this._bgImg.naturalHeight;
-      const sc = Math.max(W / iw, H / ih);
-      const dw = iw * sc;
-      const dh = ih * sc;
-      ctx.drawImage(this._bgImg, (W - dw) * 0.5, (H - dh) * 0.5, dw, dh);
-
-      const topAlpha = biome.key === 'alabaster' ? 0.18 : 0.34;
-      const botAlpha = biome.key === 'alabaster' ? 0.20 : 0.38;
-      const tg = ctx.createLinearGradient(0, 0, 0, H * 0.24);
-      tg.addColorStop(0, `rgba(6,10,18,${topAlpha})`);
-      tg.addColorStop(1, 'rgba(6,10,18,0)');
-      ctx.fillStyle = tg;
-      ctx.fillRect(0, 0, W, H * 0.24);
-
-      const bg = ctx.createLinearGradient(0, H * 0.80, 0, H);
-      bg.addColorStop(0, 'rgba(6,10,18,0)');
-      bg.addColorStop(1, `rgba(6,10,18,${botAlpha})`);
-      ctx.fillStyle = bg;
-      ctx.fillRect(0, H * 0.80, W, H * 0.20);
-      return;
-    }
-
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, biome.bgTop);
-    g.addColorStop(0.55, biome.bgMid);
-    g.addColorStop(1, biome.bgBot);
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-
-    // Subtle soft studio spotlight halo behind center
-    const rg = ctx.createRadialGradient(W * 0.5, H * 0.44, W * 0.05, W * 0.5, H * 0.46, Math.max(W, H) * 0.56);
-    rg.addColorStop(0, biome.light ? 'rgba(255,255,255,0.58)' : 'rgba(255,255,255,0.08)');
-    rg.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = rg;
-    ctx.fillRect(0, 0, W, H);
+    drawBiomeBackdrop(this.ctx, this._bgImg, this.biome, W, H);
   }
 
   _drawHudAndKeys(W, H, frame, nmFactor) {
@@ -1421,7 +1502,8 @@ export class Painter3D {
       ctx.stroke();
       ctx.font = `800 ${Math.round(badgeH * 0.52)}px ui-monospace, monospace`;
       ctx.fillStyle = '#38bdf8';
-      ctx.fillText(`YOU ${youPct}%   vs   👻 ${ghostPct}%`, cx, gy0 + Math.round(badgeH * 0.69), badgeW * 0.92);
+      const ghostTag = frame.ghostLabel ? ` ${frame.ghostLabel}` : '';
+      ctx.fillText(`YOU ${youPct}%   vs   👻${ghostTag} ${ghostPct}%`, cx, gy0 + Math.round(badgeH * 0.69), badgeW * 0.92);
     }
 
     // Floating +1 / ★ +3 score pops above recently eaten apples
@@ -1474,18 +1556,7 @@ export class Painter3D {
   }
 
   keyRects() {
-    const W = this.c.width, H = this.c.height;
-    const vertical = H > W * 1.2;
-    const kw = Math.max(26, Math.round(vertical ? W * 0.088 : Math.min(W * 0.06, 64)));
-    this.camera.updateMatrixWorld();
-    const out = [];
-    for (const cap of this.keyCaps || []) {
-      this._projVec.copy(cap.worldPos).project(this.camera);
-      const px = (this._projVec.x * 0.5 + 0.5) * W;
-      const py = (-this._projVec.y * 0.5 + 0.5) * H;
-      out.push([cap.dir, px - kw / 2, py - kw / 2, kw]);
-    }
-    return out;
+    return projectKeyRects(this.c, this.camera, this.keyCaps, this._projVec);
   }
 
   keyAt(cx, cy) {

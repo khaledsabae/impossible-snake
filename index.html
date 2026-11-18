@@ -5,7 +5,12 @@
 <meta property="og:title" content="Impossible Snake 3D">
 <meta property="og:description" content="3D arena. Live target ghost. Same rules and speed as the videos. Can you reach 100%?">
 <meta property="og:type" content="website">
+<meta property="og:url" content="https://khaledsabae.github.io/impossible-snake/">
+<meta property="og:image" content="https://khaledsabae.github.io/impossible-snake/og-card.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://khaledsabae.github.io/impossible-snake/og-card.jpg">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Crect x='5' y='6' width='16' height='5' rx='2.5' fill='%233ddc84'/%3E%3Crect x='16' y='6' width='5' height='16' rx='2.5' fill='%233ddc84'/%3E%3Crect x='9' y='17' width='12' height='5' rx='2.5' fill='%233ddc84'/%3E%3Ccircle cx='8' cy='26' r='3' fill='%23ff4d5a'/%3E%3C/svg%3E">
 <title>Impossible Snake</title>
 <style>
@@ -80,6 +85,7 @@ import { BattleAI } from './core/battle-ai.js';
 import { GhostRunner, encodeGhost } from './core/ghost.js';
 import { Painter } from './render/renderer.js';
 import { Painter3D } from './render/renderer3d.js';
+import { BattlePainter3D } from './render/battle-renderer3d.js';
 
 const params = new URLSearchParams(location.search);
 const urlMode = params.get('mode') === 'battle' ? 'battle' : 'solo';
@@ -106,9 +112,18 @@ let playerColor = initialColorIdx >= 0 ? initialColorIdx : Number(localStorage.g
 
 let viewMode = (urlView === '2d' || urlView === '3d') ? urlView : (localStorage.getItem('si.view') || '3d');
 const ug = (urlGhost || '').toLowerCase();
-let ghostEnabled = (ug === '0' || ug === 'off') ? false : ((ug === '1' || ug === 'on') ? true : localStorage.getItem('si.ghost') !== '0');
+let ghostMode = (ug === '0' || ug === 'off')
+  ? 'off'
+  : (ug === 'pb'
+    ? 'pb'
+    : ((ug === '1' || ug === 'on' || ug === 'target')
+      ? 'target'
+      : (localStorage.getItem('si.ghostMode') || (localStorage.getItem('si.ghost') === '0' ? 'off' : 'target'))));
+if (!['target', 'pb', 'off'].includes(ghostMode)) ghostMode = 'target';
 let ghostDb = null;
 let ghostRunner = null;
+let ghostLabel = null;
+let ghostFallbackNotice = false;
 
 let game, painter, prev, lastTickAt, lastFrameAt, runStartedAt, tickMs, queued = [], running = false, raf = 0;
 let eatEvents = [], recentHeads = [], fullMs = null;
@@ -121,17 +136,24 @@ let battleSlowUntil = 0, battleWinMs = null, lastBattleSummary = null;
 const lamps = { up: 0, right: 0, down: 0, left: 0 };
 const DIRNAME = ['up', 'right', 'down', 'left'];
 
-// --- WebAudio Synthesizer (zero external assets) ---
+// --- WebAudio Synthesizer (zero external assets, V5 Studio ASMR mechanical + marimba) ---
 let audioCtx = null;
+let noiseBuf = null;
 let sfxEnabled = localStorage.getItem('si.sfx') !== '0';
 const PENTATONIC = [220, 261.63, 293.66, 329.63, 392, 440, 523.25, 587.33, 659.25, 783.99, 880, 987.77, 1046.5, 1174.66];
-const KEY_PITCH = [740, 810, 660, 700];
+const KEY_PITCH = [760, 825, 675, 715];
 
 function ensureAudio() {
   if (!sfxEnabled) return null;
   if (!audioCtx) {
     const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (Ctx) audioCtx = new Ctx();
+    if (Ctx) {
+      audioCtx = new Ctx();
+      const len = Math.floor(audioCtx.sampleRate * 0.03);
+      noiseBuf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+      const data = noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    }
   }
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   return audioCtx;
@@ -141,17 +163,49 @@ function playClick(dir = 0) {
   const ctx = ensureAudio();
   if (!ctx) return;
   const now = ctx.currentTime;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = 'triangle';
-  osc.frequency.setValueAtTime(KEY_PITCH[dir & 3], now);
-  osc.frequency.exponentialRampToValueAtTime(140, now + 0.022);
-  gain.gain.setValueAtTime(0.11, now);
-  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.024);
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.start(now);
-  osc.stop(now + 0.025);
+  // Layer 1: POM bottom-out thock (235 -> 104 Hz)
+  const thock = ctx.createOscillator();
+  const thockGain = ctx.createGain();
+  thock.type = 'triangle';
+  thock.frequency.setValueAtTime(235, now);
+  thock.frequency.exponentialRampToValueAtTime(104, now + 0.022);
+  thockGain.gain.setValueAtTime(0.14, now);
+  thockGain.gain.exponentialRampToValueAtTime(0.001, now + 0.038);
+  thock.connect(thockGain);
+  thockGain.connect(ctx.destination);
+  thock.start(now);
+  thock.stop(now + 0.04);
+
+  // Layer 2: Filtered stem snap noise
+  if (noiseBuf) {
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(2200, now);
+    bp.Q.value = 1.8;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.09, now);
+    ng.gain.exponentialRampToValueAtTime(0.001, now + 0.014);
+    src.connect(bp);
+    bp.connect(ng);
+    ng.connect(ctx.destination);
+    src.start(now);
+    src.stop(now + 0.015);
+  }
+
+  // Layer 3: Keycap PBT cavity overtone
+  const cap = ctx.createOscillator();
+  const capGain = ctx.createGain();
+  cap.type = 'sine';
+  cap.frequency.setValueAtTime(KEY_PITCH[dir & 3], now);
+  cap.frequency.exponentialRampToValueAtTime(420, now + 0.018);
+  capGain.gain.setValueAtTime(0.055, now);
+  capGain.gain.exponentialRampToValueAtTime(0.001, now + 0.02);
+  cap.connect(capGain);
+  capGain.connect(ctx.destination);
+  cap.start(now);
+  cap.stop(now + 0.022);
 }
 
 function playEat(fill, golden, count) {
@@ -162,19 +216,29 @@ function playEat(fill, golden, count) {
   const f0 = PENTATONIC[idx], f1 = PENTATONIC[idx + 2];
   const note = (t0, a, b, dur, vol) => {
     const osc = ctx.createOscillator();
+    const harm = ctx.createOscillator();
     const gain = ctx.createGain();
+    const hGain = ctx.createGain();
     osc.type = 'sine';
     osc.frequency.setValueAtTime(a, t0);
-    osc.frequency.linearRampToValueAtTime(b, t0 + dur);
+    osc.frequency.linearRampToValueAtTime(b, t0 + dur * 0.35);
+    harm.type = 'sine';
+    harm.frequency.setValueAtTime(b * 2, t0);
     gain.gain.setValueAtTime(vol, t0);
     gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    hGain.gain.setValueAtTime(vol * 0.28, t0);
+    hGain.gain.exponentialRampToValueAtTime(0.001, t0 + dur * 0.45);
     osc.connect(gain);
+    harm.connect(hGain);
     gain.connect(ctx.destination);
+    hGain.connect(ctx.destination);
     osc.start(t0);
+    harm.start(t0);
     osc.stop(t0 + dur + 0.01);
+    harm.stop(t0 + dur * 0.5 + 0.01);
   };
-  note(now, f0, f1, golden ? 0.14 : 0.07, golden ? 0.18 : 0.13);
-  if (golden) note(now + 0.05, f1, PENTATONIC[Math.min(PENTATONIC.length - 1, idx + 4)], 0.16, 0.15);
+  note(now, f0, f1, golden ? 0.16 : 0.09, golden ? 0.18 : 0.13);
+  if (golden) note(now + 0.05, f1, PENTATONIC[Math.min(PENTATONIC.length - 1, idx + 4)], 0.18, 0.15);
 }
 
 function playElim(isPlayer = false) {
@@ -258,8 +322,10 @@ function syncViewBtn() {
   viewBtn.textContent = is3d ? '🧊 3D' : '▦ 2D';
 }
 function syncGhostBtn() {
-  ghostBtn.setAttribute('aria-pressed', String(ghostEnabled));
-  ghostBtn.textContent = ghostEnabled ? '👻 Ghost: ON' : '👻 Ghost: OFF';
+  ghostBtn.setAttribute('aria-pressed', String(ghostMode !== 'off'));
+  if (ghostMode === 'pb') ghostBtn.textContent = '👻 Ghost: My PB';
+  else if (ghostMode === 'off') ghostBtn.textContent = '👻 Ghost: OFF';
+  else ghostBtn.textContent = '👻 Ghost: Target';
 }
 function syncDailyBtn() {
   dailyBtn.setAttribute('aria-pressed', String(mode === 'solo' && isDaily));
@@ -279,6 +345,36 @@ function createSoloPainter(meta) {
     syncViewBtn();
   }
   return new Painter(canvas, meta);
+}
+
+function createBattlePainter() {
+  if (painter && typeof painter.dispose === 'function') painter.dispose();
+  if (viewMode === '3d' && webglSupported()) {
+    try {
+      return new BattlePainter3D(canvas, {
+        width: battleGame.w,
+        height: battleGame.h,
+        biome: 'colosseum',
+        showKeys: true,
+        playerColor,
+      });
+    } catch {
+      _webglOk = false;
+    }
+  }
+  if (viewMode === '3d' && !webglSupported()) {
+    viewMode = '2d';
+    syncViewBtn();
+  }
+  return new Painter(canvas, {
+    width: battleGame.w,
+    height: battleGame.h,
+    obstacles: [],
+    movers: [],
+    capacity: battleGame.n,
+    title: '4-COLOR BATTLE',
+    rule: 'Last Snake Standing',
+  });
 }
 
 function normArena(a, st = null) {
@@ -322,11 +418,42 @@ function startDaily() {
 
 function attachGhostForCurrentRun() {
   ghostRunner = null;
-  if (!ghostEnabled || !ghostDb || mode !== 'solo' || !game?.__stage) return;
+  ghostLabel = null;
+  ghostFallbackNotice = false;
+  if (ghostMode === 'off' || mode !== 'solo' || !game?.__stage) return;
   const stage = game.__stage;
   const runSeed = game.__runSeed;
   const actualCycle = lockedCycle !== null ? lockedCycle : (stage.cycleSeed ?? STAGES[stageId]?.cycleSeed ?? 1);
   let entry = null;
+
+  if (ghostMode === 'pb') {
+    try {
+      const raw = localStorage.getItem(`si.pbghost.${stageId}`);
+      const pb = raw ? JSON.parse(raw) : null;
+      if (pb && pb.g && pb.seed !== undefined
+        && (!pb.arena || normArena(stage.arena, stage) === pb.arena)
+        && (!stage.useMoverPockets || !pb.cycle || pb.cycle === actualCycle)) {
+        const pbCycle = pb.cycle ?? actualCycle;
+        const pbStage = (pbCycle === actualCycle && normArena(stage.arena, stage) === normArena(pb.arena || stage.arena, stage))
+          ? stage
+          : buildStage(stageId, pbCycle, (pb.arena === 'open' || pb.arena === 'box') ? undefined : pb.arena).stage;
+        ghostRunner = new GhostRunner(pbStage, pb.seed, pb.g);
+        ghostLabel = 'PB';
+      } else {
+        ghostFallbackNotice = true;
+      }
+    } catch {
+      ghostFallbackNotice = true;
+    }
+    if (ghostRunner) {
+      if (running && performance.now() - runStartedAt > 16) {
+        ghostRunner.advance(performance.now() - runStartedAt);
+      }
+      return;
+    }
+  }
+
+  if (!ghostDb) return;
   if (lockedSeed !== null) {
     entry = ghostDb.stockRuns?.[`${stageId}:${runSeed}:${actualCycle}:${stage.arena || ''}`]
       || ghostDb.stockRuns?.[`${stageId}:${runSeed}:${actualCycle}`]
@@ -354,15 +481,17 @@ viewBtn.onclick = () => {
   syncViewBtn();
   if (mode === 'solo' && game?.__stage) {
     painter = createSoloPainter({ ...game.__stage, capacity: game.capacity, title: game.__stage.title, rule: game.__stage.rule });
+  } else if (mode === 'battle' && battleGame) {
+    painter = createBattlePainter();
   }
 };
 ghostBtn.onclick = () => {
-  ghostEnabled = !ghostEnabled;
-  localStorage.setItem('si.ghost', ghostEnabled ? '1' : '0');
+  ghostMode = ghostMode === 'target' ? 'pb' : (ghostMode === 'pb' ? 'off' : 'target');
+  localStorage.setItem('si.ghostMode', ghostMode);
+  localStorage.setItem('si.ghost', ghostMode === 'off' ? '0' : '1');
   syncGhostBtn();
   if (mode === 'solo') {
-    if (ghostEnabled) attachGhostForCurrentRun();
-    else ghostRunner = null;
+    attachGhostForCurrentRun();
     showBest();
   }
 };
@@ -374,7 +503,7 @@ const ghostsUrl = location.pathname.includes('/web/') ? '../dist/data/ghosts.jso
 fetch(ghostsUrl).then((r) => (r.ok ? r.json() : null)).then((db) => {
   if (!db) return;
   ghostDb = db;
-  if (mode === 'solo' && game && !ghostRunner && ghostEnabled) {
+  if (mode === 'solo' && game && !ghostRunner && ghostMode !== 'off') {
     attachGhostForCurrentRun();
     showBest();
   }
@@ -477,16 +606,7 @@ function startBattle(keepChallenge = false) {
   battleSlowUntil = 0;
   battleWinMs = null;
   lastBattleSummary = null;
-  if (painter && typeof painter.dispose === 'function') painter.dispose();
-  painter = new Painter(canvas, {
-    width: battleGame.w,
-    height: battleGame.h,
-    obstacles: [],
-    movers: [],
-    capacity: battleGame.n,
-    title: '4-COLOR BATTLE',
-    rule: 'Last Snake Standing',
-  });
+  painter = createBattlePainter();
   tickMs = 115;
   lastTickAt = performance.now();
   lastFrameAt = lastTickAt;
@@ -561,11 +681,34 @@ function loop() {
     }
     const f = running ? Math.min(1, (now - lastTickAt) / tickMs) : 1;
     for (const k of Object.keys(lamps)) lamps[k] = Math.max(0, lamps[k] - 0.045);
-    paintBattleFrame(now, f);
+    if (painter instanceof BattlePainter3D) {
+      const nextShrink = battleGame.shrinkStartTick + battleGame.shrinkRing * battleGame.shrinkEvery;
+      const ticksToShrink = nextShrink - battleGame.tick;
+      const shrinkImminent = battleGame.shrinkRing < battleGame.maxShrinkRing && ticksToShrink > 0 && ticksToShrink <= 8;
+      painter.paint({
+        snakes: battlePrev,
+        nextSnakes: battleGame.snakes,
+        f,
+        apples: battleGame.apples,
+        obstacles: Array.from(battleGame.obstacles),
+        shrinkRing: battleGame.shrinkRing,
+        shrinkImminent,
+        ticksToShrink,
+        eatEvents: battleEatEvents,
+        elimEvents: battleElimEvents,
+        winner: battleGame.winner,
+        winnerLength: battleGame.winner !== null ? battleGame.snakes[battleGame.winner]?.cells.length : null,
+        winMs: battleWinMs,
+        keyLights: lamps,
+        ms: now,
+      });
+    } else {
+      paintBattleFrame(now, f);
+    }
     return;
   }
 
-  if (running && ghostEnabled && ghostRunner) {
+  if (running && ghostMode !== 'off' && ghostRunner) {
     ghostRunner.advance(dt);
   }
 
@@ -602,7 +745,8 @@ function loop() {
     tick: Math.max(0, game.tick - 1), moversGone: game.moversGone,
     len: game.snake.length, ms: now, keyLights: lamps,
     eatEvents, fullMs, recentHeads: tickMs <= 65 ? recentHeads : [game.head],
-    ghost: (ghostEnabled && ghostRunner) ? ghostRunner.frame() : null,
+    ghost: (ghostMode !== 'off' && ghostRunner) ? ghostRunner.frame() : null,
+    ghostLabel,
     moverShatterTick: liveShatterTick,
     moverShatterMs: liveShatterMs,
   });
@@ -964,6 +1108,8 @@ function finish() {
       localStorage.setItem(`si.pbghost.${stageId}`, JSON.stringify({
         pct,
         seed: game.__runSeed,
+        cycle: game.__stage?.cycleSeed ?? STAGES[stageId]?.cycleSeed ?? 1,
+        arena: normArena(game.__stage?.arena, game.__stage),
         ticks: playerDirs.length,
         g: encodeGhost(playerDirs),
       }));
@@ -979,9 +1125,10 @@ function finish() {
   pctEl.style.color = 'var(--accent)';
   pctEl.textContent = `${(pct * 100).toFixed(1)}%`;
   const arenaLabel = game.__stage?.arenaName || STAGES[stageId]?.arenaName || (stageId >= 4 ? 'FOUR PILLARS' : 'CLASSIC GRID');
-  const ghostFrame = (ghostEnabled && ghostRunner) ? ghostRunner.frame() : null;
+  const ghostFrame = (ghostMode !== 'off' && ghostRunner) ? ghostRunner.frame() : null;
+  const ghostName = ghostLabel === 'PB' ? '👻 PB' : '👻 TARGET';
   const ghostLine = ghostFrame
-    ? `<br>YOU <b>${(pct * 100).toFixed(1)}%</b> vs 👻 TARGET <b>${((ghostFrame.length / ghostFrame.capacity) * 100).toFixed(1)}%</b>`
+    ? `<br>YOU <b>${(pct * 100).toFixed(1)}%</b> vs ${ghostName} <b>${((ghostFrame.length / ghostFrame.capacity) * 100).toFixed(1)}%</b>`
     : '';
   document.getElementById('note').innerHTML = won
     ? `You conquered <b>${arenaLabel}</b> (${game.capacity}/${game.capacity} squares)!${ghostLine} Copy your score and post it in the YouTube comments.`
@@ -1003,7 +1150,12 @@ function showBest() {
   const b = Number(localStorage.getItem(`si.best.${stageId}`) || 0);
   const medal = medalFor(b);
   const arenaLabel = game?.__stage?.arenaName || STAGES[stageId]?.arenaName || (stageId >= 4 ? 'FOUR PILLARS' : 'CLASSIC GRID');
-  const ghostTag = (ghostEnabled && ghostRunner) ? '  ·  👻 Live Target Race' : '';
+  let ghostTag = '';
+  if (ghostMode !== 'off' && ghostRunner) {
+    ghostTag = ghostMode === 'pb'
+      ? (ghostFallbackNotice ? '  ·  👻 no PB yet — racing Target' : '  ·  👻 Racing My PB')
+      : '  ·  👻 Live Target Race';
+  }
   document.getElementById('best').textContent =
     `Personal Best: ${(b * 100).toFixed(1)}% ${medal}  ·  ${arenaLabel}  ·  ${STAGES[stageId].rule}${ghostTag}`;
 }
