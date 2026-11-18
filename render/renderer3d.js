@@ -5,6 +5,7 @@
 import * as THREE from '../vendor/three.module.js';
 import { Game } from '../core/game.js';
 import { stageFromLog, NO_KEYS } from './renderer.js';
+import { makeKeycapGeometry, makeAppleBodyGeometry, makeAppleLeafGeometry } from './blender-meshes.js';
 
 export const BIOMES_3D = {
   alabaster: {
@@ -23,9 +24,10 @@ export const BIOMES_3D = {
     obstacleBase: 0x1e293b,
     obstacleCap: 0x475569,
     obstacleEmissive: 0x0f172a,
-    snakeHead: 0x10b981,
-    snakeA: 0x059669,
-    snakeB: 0x047857,
+    snakeHead: 0x34d399,
+    snakeA: 0x10b981,
+    snakeMid: 0x0284c7,
+    snakeB: 0x1e3a8a,
     appleColor: 0xef4444,
     goldenColor: 0xf59e0b,
     moverColor: 0x0ea5e9,
@@ -58,9 +60,10 @@ export const BIOMES_3D = {
     obstacleBase: 0x0c4a6e,
     obstacleCap: 0x38bdf8,
     obstacleEmissive: 0x082f49,
-    snakeHead: 0xf43f5e,
-    snakeA: 0xe11d48,
-    snakeB: 0xbe123c,
+    snakeHead: 0xfda4af,
+    snakeA: 0xf43f5e,
+    snakeMid: 0x9333ea,
+    snakeB: 0x312e81,
     appleColor: 0xf59e0b,
     goldenColor: 0xfbbf24,
     moverColor: 0x06b6d4,
@@ -93,9 +96,10 @@ export const BIOMES_3D = {
     obstacleBase: 0x0f172a,
     obstacleCap: 0xf59e0b,
     obstacleEmissive: 0x332200,
-    snakeHead: 0xfde047,
+    snakeHead: 0xfef08a,
     snakeA: 0xf59e0b,
-    snakeB: 0xd97706,
+    snakeMid: 0xea580c,
+    snakeB: 0x7c2d12,
     appleColor: 0x10b981,
     goldenColor: 0xfef08a,
     moverColor: 0x38bdf8,
@@ -128,9 +132,10 @@ export const BIOMES_3D = {
     obstacleBase: 0x170f26,
     obstacleCap: 0xe879f9,
     obstacleEmissive: 0x3b0764,
-    snakeHead: 0xf5d0fe,
-    snakeA: 0xd946ef,
-    snakeB: 0x9333ea,
+    snakeHead: 0x67e8f9,
+    snakeA: 0xe879f9,
+    snakeMid: 0x9333ea,
+    snakeB: 0x3b0764,
     appleColor: 0x00f5d4,
     goldenColor: 0xfbbf24,
     moverColor: 0x00f5d4,
@@ -223,10 +228,28 @@ export class Painter3D {
 
     this._tmpObj = new THREE.Object3D();
     this._tmpColor = new THREE.Color();
+    this._projVec = new THREE.Vector3();
+    this._cHeadColor = new THREE.Color(this.biome.snakeHead);
     this._cA = new THREE.Color();
+    this._cMid = new THREE.Color();
     this._cB = new THREE.Color();
     this._cGold = new THREE.Color(this.biome.goldenColor);
     this._cDanger = new THREE.Color(0xef4444);
+    this._envRT = null;
+
+    this._bgImg = null;
+    this._bgReady = Promise.resolve();
+    if (typeof Image !== 'undefined') {
+      this._bgImg = new Image();
+      this._bgReady = new Promise((resolve) => {
+        this._bgImg.onload = () => resolve();
+        this._bgImg.onerror = () => resolve();
+      });
+      this._bgImg.src = new URL(`./assets/backdrops/${this.biome.key}.jpg`, import.meta.url).href;
+    }
+
+    this._bloomCanvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
+    this._bloomCtx = this._bloomCanvas ? this._bloomCanvas.getContext('2d') : null;
 
     this.glCanvas = document.createElement('canvas');
     this.webgl = new THREE.WebGLRenderer({
@@ -244,7 +267,7 @@ export class Painter3D {
     this.webgl.toneMappingExposure = 1.08;
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(34, canvas.width / Math.max(1, canvas.height), 0.5, 160);
+    this.camera = new THREE.PerspectiveCamera(32, canvas.width / Math.max(1, canvas.height), 0.5, 160);
     this._w = 0;
     this._h = 0;
     this._ensureSize(canvas.width, canvas.height);
@@ -252,6 +275,12 @@ export class Painter3D {
     this._buildLights();
     this._buildArenaGeometry();
     this._buildPooledActors();
+    this._buildKeycapCluster();
+    this._updateCamera({}, canvas.width || 1080, canvas.height || 1920, 0, 0);
+  }
+
+  ready() {
+    return this._bgReady;
   }
 
   _ensureSize(w, h) {
@@ -261,6 +290,10 @@ export class Painter3D {
     this.glCanvas.width = w;
     this.glCanvas.height = h;
     this.webgl.setSize(w, h, false);
+    if (this._bloomCanvas) {
+      this._bloomCanvas.width = Math.max(1, w >> 3);
+      this._bloomCanvas.height = Math.max(1, h >> 3);
+    }
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
   }
@@ -270,6 +303,27 @@ export class Painter3D {
 
   _buildLights() {
     const b = this.biome;
+
+    // Procedural studio softboxes environment map for clearcoat reflections
+    const pmrem = new THREE.PMREMGenerator(this.webgl);
+    const envScene = new THREE.Scene();
+    envScene.background = new THREE.Color(b.light ? 0x2a3342 : 0x0b101b);
+    const addPanel = (col, x, y, z, rx, ry, rz, sx, sy) => {
+      const panel = new THREE.Mesh(
+        new THREE.PlaneGeometry(sx, sy),
+        new THREE.MeshBasicMaterial({ color: col, side: THREE.DoubleSide })
+      );
+      panel.position.set(x, y, z);
+      panel.rotation.set(rx, ry, rz);
+      envScene.add(panel);
+    };
+    addPanel(0xffffff, 0, 14, 2, Math.PI / 2, 0, 0, 18, 12);
+    addPanel(b.wrapFrameColor, -12, 6, -4, 0, Math.PI / 2, 0, 14, 10);
+    addPanel(b.goldenColor, 12, 6, 6, 0, -Math.PI / 2, 0, 12, 10);
+    this._envRT = pmrem.fromScene(envScene, 0.04);
+    this.scene.environment = this._envRT.texture;
+    pmrem.dispose();
+
     const hemi = new THREE.HemisphereLight(b.skyLight, b.groundLight, b.ambientIntensity);
     this.scene.add(hemi);
 
@@ -280,11 +334,11 @@ export class Painter3D {
     key.shadow.mapSize.set(768, 768);
     key.shadow.radius = 2;
     key.shadow.camera.near = 2;
-    key.shadow.camera.far = 48;
-    key.shadow.camera.left = -span;
-    key.shadow.camera.right = span;
-    key.shadow.camera.top = span;
-    key.shadow.camera.bottom = -span;
+    key.shadow.camera.far = 52;
+    key.shadow.camera.left = -(span + 2);
+    key.shadow.camera.right = span + 2;
+    key.shadow.camera.top = span + 2;
+    key.shadow.camera.bottom = -(span + 7);
     key.shadow.bias = -0.0008;
     this.scene.add(key);
     this.keyLight = key;
@@ -304,13 +358,13 @@ export class Painter3D {
     const H = this.m.height;
     const b = this.biome;
 
-    // Studio floor shadow catcher
+    // Studio floor shadow catcher covering both arena plinth and south macro-pad
     const shadowPlane = new THREE.Mesh(
-      new THREE.PlaneGeometry(W + 18, H + 18),
-      new THREE.ShadowMaterial({ opacity: b.light ? 0.18 : 0.36 })
+      new THREE.PlaneGeometry(W + 24, H + 28),
+      new THREE.ShadowMaterial({ opacity: b.light ? 0.22 : 0.40 })
     );
     shadowPlane.rotation.x = -Math.PI / 2;
-    shadowPlane.position.y = -0.78;
+    shadowPlane.position.set(0, -0.78, 2.0);
     shadowPlane.receiveShadow = true;
     this.scene.add(shadowPlane);
 
@@ -427,12 +481,14 @@ export class Painter3D {
     const total = this.m.width * this.m.height;
     const maxSegs = total * 2 + 12;
 
-    // Articulated glossy snake body pool (segments + non-wrap bridges)
+    // Articulated glossy clearcoat snake body pool (segments + non-wrap capsule bridges)
     const segGeo = makeRoundedPillGeometry(0.76, 0.52, 0.76, 0.24, 0.085);
-    const segMat = new THREE.MeshStandardMaterial({
+    const segMat = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
-      roughness: 0.20,
-      metalness: 0.18,
+      roughness: 0.15,
+      metalness: 0.12,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.07,
     });
     this.snakeMesh = new THREE.InstancedMesh(segGeo, segMat, maxSegs);
     this.snakeMesh.castShadow = true;
@@ -452,7 +508,13 @@ export class Painter3D {
     this.headGroup = new THREE.Group();
     const headMesh = new THREE.Mesh(
       makeRoundedPillGeometry(0.84, 0.60, 0.84, 0.26, 0.095),
-      new THREE.MeshStandardMaterial({ color: b.snakeHead, roughness: 0.18, metalness: 0.16 })
+      new THREE.MeshPhysicalMaterial({
+        color: b.snakeHead,
+        roughness: 0.14,
+        metalness: 0.12,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.06,
+      })
     );
     headMesh.castShadow = true;
     headMesh.receiveShadow = true;
@@ -474,33 +536,48 @@ export class Painter3D {
     this.headGroup.add(this.leftEye, this.rightEye, this.leftPupil, this.rightPupil);
     this.scene.add(this.headGroup);
 
-    // 3D Gem Apple + Golden Star Halo
+    // 3D Sculpted Apple + Leaf + Golden Star Halo + Floor Target Reticle
     this.appleGroup = new THREE.Group();
     this.normalAppleMesh = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(0.35, 1),
-      new THREE.MeshStandardMaterial({
+      makeAppleBodyGeometry(THREE),
+      new THREE.MeshPhysicalMaterial({
         color: b.appleColor,
         emissive: b.appleColor,
-        emissiveIntensity: 0.32,
-        roughness: 0.18,
-        metalness: 0.22,
+        emissiveIntensity: 0.34,
+        roughness: 0.14,
+        metalness: 0.16,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.06,
       })
     );
     this.normalAppleMesh.castShadow = true;
     this.stemMesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.04, 0.05, 0.22, 8),
-      new THREE.MeshStandardMaterial({ color: 0x22c55e, roughness: 0.4 })
+      new THREE.CylinderGeometry(0.036, 0.048, 0.22, 8),
+      new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.5 })
     );
-    this.stemMesh.position.set(0, 0.34, 0);
+    this.stemMesh.position.set(0, 0.32, 0);
+    this.leafMesh = new THREE.Mesh(
+      makeAppleLeafGeometry(THREE),
+      new THREE.MeshPhysicalMaterial({
+        color: 0x22c55e,
+        emissive: 0x15803d,
+        emissiveIntensity: 0.22,
+        roughness: 0.22,
+        clearcoat: 0.8,
+      })
+    );
+    this.leafMesh.castShadow = true;
 
     this.goldenAppleMesh = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.40, 0),
-      new THREE.MeshStandardMaterial({
+      new THREE.MeshPhysicalMaterial({
         color: b.goldenColor,
         emissive: b.goldenColor,
-        emissiveIntensity: 0.48,
-        roughness: 0.15,
-        metalness: 0.65,
+        emissiveIntensity: 0.52,
+        roughness: 0.14,
+        metalness: 0.55,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.06,
       })
     );
     this.goldenAppleMesh.castShadow = true;
@@ -509,13 +586,22 @@ export class Painter3D {
       new THREE.MeshStandardMaterial({
         color: 0xfef08a,
         emissive: b.goldenColor,
-        emissiveIntensity: 0.7,
+        emissiveIntensity: 0.72,
         roughness: 0.2,
       })
     );
     this.goldenRingMesh.rotation.x = Math.PI / 2;
-    this.appleGroup.add(this.normalAppleMesh, this.stemMesh, this.goldenAppleMesh, this.goldenRingMesh);
+    this.appleGroup.add(this.normalAppleMesh, this.stemMesh, this.leafMesh, this.goldenAppleMesh, this.goldenRingMesh);
     this.scene.add(this.appleGroup);
+
+    this.appleReticleMat = new THREE.MeshBasicMaterial({
+      color: b.appleColor,
+      transparent: true,
+      opacity: 0.65,
+    });
+    this.appleReticle = new THREE.Mesh(new THREE.TorusGeometry(0.46, 0.026, 8, 32), this.appleReticleMat);
+    this.appleReticle.rotation.x = Math.PI / 2;
+    this.scene.add(this.appleReticle);
 
     // Patrolling 3D Hazards + Shatter Debris Pool
     const moverCount = (this.m.movers || []).length;
@@ -606,14 +692,135 @@ export class Painter3D {
     this.scene.add(this.ghostMesh);
   }
 
+  _buildKeycapCluster() {
+    const W = this.m.width, H = this.m.height;
+    const b = this.biome;
+    const padScale = Math.max(W, H) / 12;
+    const zPad = H / 2 + 0.65 + 1.85 * padScale;
+    const step = 1.08 * padScale;
+
+    this.keyPadGroup = new THREE.Group();
+    const housingGeo = makeRoundedPillGeometry(3.85 * padScale, 0.34 * padScale, 2.48 * padScale, 0.30 * padScale, 0.06 * padScale);
+    const housingMat = new THREE.MeshStandardMaterial({
+      color: b.plinthColor,
+      roughness: 0.42,
+      metalness: 0.38,
+    });
+    const housing = new THREE.Mesh(housingGeo, housingMat);
+    housing.position.set(0, -0.42, zPad);
+    housing.castShadow = true;
+    housing.receiveShadow = true;
+    this.keyPadGroup.add(housing);
+
+    const arrowRadius = 0.17 * padScale;
+    const arrowShape = new THREE.Shape();
+    arrowShape.moveTo(0, arrowRadius);
+    arrowShape.lineTo(arrowRadius * 0.86, -arrowRadius * 0.68);
+    arrowShape.lineTo(-arrowRadius * 0.86, -arrowRadius * 0.68);
+    arrowShape.closePath();
+    const arrowGeo = new THREE.ExtrudeGeometry(arrowShape, {
+      depth: 0.055 * padScale,
+      bevelEnabled: false,
+    });
+    arrowGeo.rotateX(-Math.PI / 2);
+
+    const stemGeo = new THREE.BoxGeometry(0.78 * padScale, 0.22 * padScale, 0.78 * padScale);
+    const capGeo = makeKeycapGeometry(THREE, padScale);
+
+    const topY = -0.42 + 0.17 * padScale;
+    const restY = topY + 0.28 * padScale;
+    const capColorHex = b.light ? 0x1e293b : 0x1b2333;
+    const accentColorHex = b.frameColor;
+
+    const specs = [
+      ['up', 0, 0, zPad - 0.54 * padScale, 0],
+      ['right', 1, step, zPad + 0.54 * padScale, -Math.PI / 2],
+      ['down', 2, 0, zPad + 0.54 * padScale, Math.PI],
+      ['left', 3, -step, zPad + 0.54 * padScale, Math.PI / 2],
+    ];
+
+    this.keyCaps = [];
+    this._keyBaseColor = new THREE.Color(capColorHex);
+    this._keyActiveColor = new THREE.Color(b.accentCss);
+    this._keyLegendRest = new THREE.Color(0xcbd5e1);
+    this._keyLegendHot = new THREE.Color(0xffffff);
+
+    for (const [name, dir, kx, kz, rotY] of specs) {
+      const stemMat = new THREE.MeshStandardMaterial({
+        color: accentColorHex,
+        emissive: accentColorHex,
+        emissiveIntensity: 0.3,
+        roughness: 0.25,
+      });
+      const stem = new THREE.Mesh(stemGeo, stemMat);
+      stem.position.set(kx, topY + 0.06 * padScale, kz);
+      this.keyPadGroup.add(stem);
+
+      const capGroup = new THREE.Group();
+      capGroup.position.set(kx, restY, kz);
+
+      const capMat = new THREE.MeshPhysicalMaterial({
+        color: capColorHex,
+        emissive: accentColorHex,
+        emissiveIntensity: 0.05,
+        roughness: 0.22,
+        metalness: 0.14,
+        clearcoat: 0.9,
+        clearcoatRoughness: 0.10,
+      });
+      const capMesh = new THREE.Mesh(capGeo, capMat);
+      capMesh.castShadow = true;
+      capMesh.receiveShadow = true;
+
+      const arrowMat = new THREE.MeshStandardMaterial({
+        color: 0xcbd5e1,
+        emissive: accentColorHex,
+        emissiveIntensity: 0.25,
+        roughness: 0.2,
+      });
+      const arrowMesh = new THREE.Mesh(arrowGeo, arrowMat);
+      arrowMesh.position.set(0, 0.184 * padScale, 0);
+      arrowMesh.rotation.y = rotY;
+
+      capGroup.add(capMesh, arrowMesh);
+      this.keyPadGroup.add(capGroup);
+
+      this.keyCaps.push({
+        name,
+        dir,
+        kx,
+        kz,
+        restY,
+        travel: 0.19 * padScale,
+        capGroup,
+        capMat,
+        stemMat,
+        arrowMat,
+        worldPos: new THREE.Vector3(kx, restY, kz),
+      });
+    }
+
+    this.scene.add(this.keyPadGroup);
+  }
+
   _updateTiles(frame, nmFactor, ms) {
     const W = this.m.width;
     const H = this.m.height;
     const total = W * H;
     const b = this.biome;
-    const isFull = frame.len >= this.m.capacity;
+    const left = Math.max(0, this.m.capacity - (frame.len ?? 3));
+    const isFull = left === 0;
     const headCell = frame.base?.[0] ?? 0;
     const hx = headCell % W, hy = (headCell / W) | 0;
+
+    if (this.rimMat) {
+      const baseRim = this.m.wrap ? 0.65 : 0.28;
+      this.rimMat.emissiveIntensity = left > 0 && left <= 12
+        ? baseRim + ((13 - left) / 12) * 0.55
+        : baseRim;
+    }
+
+    const occSet = (left > 0 && left <= 12 && frame.base) ? new Set(frame.base) : null;
 
     // Determine danger highlight cells near snake head during near-miss
     let warnSet = null;
@@ -651,6 +858,11 @@ export class Painter3D {
         const band = Math.exp(-Math.pow((dist - waveFront) * 0.55, 2));
         this._tmpColor.lerp(this._cGold, clamp(0.18 + band * 0.55, 0, 0.75));
         y += band * 0.08;
+      } else if (occSet && !occSet.has(i)) {
+        const wave = 0.5 + 0.5 * Math.sin(ms * 0.012 + (gx + gy) * 0.45);
+        const glowAmt = clamp((0.18 + 0.16 * wave) * ((13 - left) / 12), 0.12, 0.42);
+        this._tmpColor.lerp(this._cGold, glowAmt);
+        y += 0.022 + 0.016 * wave;
       }
 
       this.tileMesh.setColorAt(i, this._tmpColor);
@@ -692,7 +904,7 @@ export class Painter3D {
       }
     }
 
-    // Recent swallow wave along the body
+    // Extended swallow wave along the body
     const n = pts.length;
     const swallowScale = new Float32Array(n).fill(1);
     const eatEvents = frame.eatEvents || [];
@@ -700,13 +912,13 @@ export class Painter3D {
       const ev = eatEvents[e];
       if (ev.ms > ms) continue;
       const age = ms - ev.ms;
-      if (age > 750) break;
-      const pos = (age / 750) * Math.min(n - 1, 14);
-      const sigma = 1.6;
-      const amp = ev.golden ? 0.24 : 0.16;
+      if (age > 920) break;
+      const pos = (age / 920) * Math.min(n - 1, 36);
+      const sigma = 2.0;
+      const amp = ev.golden ? 0.34 : 0.24;
       for (let k = 1; k < n; k++) {
         const d = k - pos;
-        if (Math.abs(d) > 3.5) continue;
+        if (Math.abs(d) > 4.2) continue;
         swallowScale[k] = Math.max(swallowScale[k], 1 + amp * Math.exp(-(d * d) / (2 * sigma * sigma)));
       }
     }
@@ -716,12 +928,13 @@ export class Painter3D {
       : -1;
 
     this._cA.setHex(b.snakeA);
+    this._cMid.setHex(b.snakeMid || b.snakeA);
     this._cB.setHex(b.snakeB);
     const o = this._tmpObj;
     let count = 0;
     const maxCount = this.snakeMesh.count;
 
-    // Emit body segments from index 1..n-1 + smooth capsule bridges where adjacent
+    // Emit 3-stop gradient body segments + smooth capsule bridges where adjacent
     for (let i = 0; i < n && count < maxCount; i++) {
       const p = pts[i];
       const tNorm = i / Math.max(1, n - 1);
@@ -729,8 +942,17 @@ export class Painter3D {
       const waveY = shockAge >= 0 ? Math.sin(shockAge * 0.015 - i * 0.45) * 0.06 * Math.exp(-shockAge / 1800) : 0;
       const sw = swallowScale[i];
 
-      this._tmpColor.copy(this._cA).lerp(this._cB, tNorm);
-      if (shockAge >= 0) this._tmpColor.lerp(this._cGold, 0.28 * Math.exp(-shockAge / 2400));
+      if (tNorm < 0.48) {
+        this._tmpColor.copy(this._cA).lerp(this._cMid, tNorm / 0.48);
+      } else {
+        this._tmpColor.copy(this._cMid).lerp(this._cB, (tNorm - 0.48) / 0.52);
+      }
+      if (i <= 4) {
+        this._tmpColor.lerp(this._cHeadColor, (5 - i) * 0.09);
+      }
+      if (shockAge >= 0 && shockAge < 420) {
+        this._tmpColor.lerp(this._keyLegendHot, 0.28 * Math.exp(-shockAge / 130));
+      }
 
       if (i > 0) {
         const s = tailTaper * sw;
@@ -810,33 +1032,44 @@ export class Painter3D {
   }
 
   _updateApple(frame, ms) {
-    if (!frame.apple || frame.apple.cell < 0) {
+    if (!frame.apple || frame.apple.cell < 0 || (frame.len ?? 0) >= this.m.capacity) {
       this.appleGroup.visible = false;
+      this.appleReticle.visible = false;
       this.appleLight.intensity = 0;
       return;
     }
     this.appleGroup.visible = true;
+    this.appleReticle.visible = true;
     const x = this._cellX(frame.apple.cell);
     const z = this._cellZ(frame.apple.cell);
     const bob = 0.44 + Math.sin(ms * 0.005) * 0.06;
     this.appleGroup.position.set(x, bob, z);
+    this.appleReticle.position.set(x, 0.035, z);
+    const retScale = 1 + Math.sin(ms * 0.008) * 0.12;
+    this.appleReticle.scale.setScalar(retScale);
+    this.appleReticleMat.color.setHex(frame.apple.golden ? this.biome.goldenColor : this.biome.appleColor);
+    this.appleReticleMat.opacity = 0.52 + 0.24 * (0.5 + 0.5 * Math.sin(ms * 0.008));
+
     this.appleLight.position.set(x, 1.15, z);
     this.appleLight.color.setHex(frame.apple.golden ? this.biome.goldenColor : this.biome.appleColor);
-    this.appleLight.intensity = frame.apple.golden ? 2.1 : 1.3;
+    this.appleLight.intensity = frame.apple.golden ? 2.2 : 1.4;
 
     const gold = !!frame.apple.golden;
     this.normalAppleMesh.visible = !gold;
     this.stemMesh.visible = !gold;
+    this.leafMesh.visible = !gold;
     this.goldenAppleMesh.visible = gold;
     this.goldenRingMesh.visible = gold;
 
     if (gold) {
+      this.appleGroup.rotation.set(0, 0, 0);
       this.goldenAppleMesh.rotation.set(ms * 0.0016, ms * 0.0032, 0);
       this.goldenRingMesh.rotation.set(Math.PI / 2 + Math.sin(ms * 0.003) * 0.35, ms * 0.002, 0);
       const pulse = 1 + Math.sin(ms * 0.008) * 0.08;
       this.goldenAppleMesh.scale.setScalar(pulse);
     } else {
-      this.normalAppleMesh.rotation.set(0, ms * 0.0022, 0);
+      this.normalAppleMesh.rotation.set(0, 0, 0);
+      this.appleGroup.rotation.set(0, ms * 0.0022, 0);
     }
   }
 
@@ -985,19 +1218,44 @@ export class Painter3D {
     this.ghostMesh.instanceMatrix.needsUpdate = true;
   }
 
+  _updateKeycapCluster(frame) {
+    if (!this.keyCaps || !this.keyCaps.length) return;
+    const lights = frame.keyLights || NO_KEYS;
+    for (const cap of this.keyCaps) {
+      const lit = lights[cap.name] || 0;
+      cap.capGroup.position.y = cap.restY - cap.travel * lit;
+      cap.stemMat.emissiveIntensity = 0.30 + 2.2 * lit;
+      cap.capMat.color.copy(this._keyBaseColor).lerp(this._keyActiveColor, lit * 0.85);
+      cap.capMat.emissiveIntensity = 0.05 + 0.45 * lit;
+      cap.arrowMat.color.copy(this._keyLegendRest).lerp(this._keyLegendHot, lit);
+      cap.arrowMat.emissiveIntensity = 0.25 + 1.35 * lit;
+    }
+  }
+
   _updateCamera(frame, W, H, nmFactor, ms) {
     const aspect = W / Math.max(1, H);
     const vertical = H > W * 1.2;
-    const boardSpan = Math.max(this.m.width, this.m.height) + 1.55;
+    const padScale = Math.max(this.m.width, this.m.height) / 12;
+    const zNorth = -(this.m.height / 2 + 0.59);
+    const zSouth = this.m.height / 2 + 0.65 + 3.10 * padScale;
+    const spanX = this.m.width + 1.36;
+    const spanZ = zSouth - zNorth;
+    const zMid = (zNorth + zSouth) * 0.5;
+
+    const elev = THREE.MathUtils.degToRad(vertical ? 50 : 53);
     const fovRad = THREE.MathUtils.degToRad(this.camera.fov);
     const tanHalfY = Math.tan(fovRad / 2);
 
-    const minDistHoriz = boardSpan / (2 * tanHalfY * Math.max(0.42, aspect) * (vertical ? 0.80 : 0.72));
-    const minDistVert = boardSpan / (2 * tanHalfY * (vertical ? 0.62 : 0.78));
+    const minDistHoriz = spanX / (2 * tanHalfY * Math.max(0.42, aspect) * (vertical ? 0.90 : 0.76));
+    const minDistVert = (spanZ * Math.sin(elev) + 1.55) / (2 * tanHalfY * (vertical ? 0.66 : 0.80));
     let dist = Math.max(minDistHoriz, minDistVert);
 
-    // Subtle zoom-in during millimeter near-miss slow-mo (keep entire 3D plinth framed)
-    dist *= 1 - 0.065 * nmFactor;
+    let heroIntro = 0;
+    if (frame.clipStartMs !== undefined && ms >= frame.clipStartMs && ms - frame.clipStartMs < 750) {
+      heroIntro = Math.pow(1 - (ms - frame.clipStartMs) / 750, 3);
+    }
+
+    dist *= (1 - 0.15 * heroIntro) * (1 - 0.07 * nmFactor);
 
     let focusX = 0, focusZ = 0;
     if (frame.camFocus) {
@@ -1007,11 +1265,17 @@ export class Painter3D {
       focusX = this._cellX(frame.base[0]);
       focusZ = this._cellZ(frame.base[0]);
     }
-    const followWeight = 0.10 + 0.14 * nmFactor;
-    const tx = focusX * followWeight;
-    const tz = focusZ * followWeight + (vertical ? 0.15 : 0.05);
+    if (heroIntro > 0 && frame.apple && frame.apple.cell >= 0) {
+      const ax = this._cellX(frame.apple.cell);
+      const az = this._cellZ(frame.apple.cell);
+      focusX = lerp(focusX, (focusX + ax) * 0.5, heroIntro * 0.55);
+      focusZ = lerp(focusZ, (focusZ + az) * 0.5, heroIntro * 0.55);
+    }
 
-    const elev = THREE.MathUtils.degToRad(vertical ? 54 : 56);
+    const followWeight = 0.10 + 0.14 * nmFactor + 0.28 * heroIntro;
+    const tx = focusX * followWeight;
+    const tz = zMid * (1 - 0.35 * heroIntro) + focusZ * followWeight;
+
     const camY = dist * Math.sin(elev);
     const camZ = tz + dist * Math.cos(elev);
     this.camera.position.set(tx, camY, camZ);
@@ -1029,6 +1293,30 @@ export class Painter3D {
 
   _drawBackdrop(W, H) {
     const { ctx, biome } = this;
+    if (this._bgImg && this._bgImg.complete && this._bgImg.naturalWidth > 0) {
+      const iw = this._bgImg.naturalWidth;
+      const ih = this._bgImg.naturalHeight;
+      const sc = Math.max(W / iw, H / ih);
+      const dw = iw * sc;
+      const dh = ih * sc;
+      ctx.drawImage(this._bgImg, (W - dw) * 0.5, (H - dh) * 0.5, dw, dh);
+
+      const topAlpha = biome.key === 'alabaster' ? 0.18 : 0.34;
+      const botAlpha = biome.key === 'alabaster' ? 0.20 : 0.38;
+      const tg = ctx.createLinearGradient(0, 0, 0, H * 0.24);
+      tg.addColorStop(0, `rgba(6,10,18,${topAlpha})`);
+      tg.addColorStop(1, 'rgba(6,10,18,0)');
+      ctx.fillStyle = tg;
+      ctx.fillRect(0, 0, W, H * 0.24);
+
+      const bg = ctx.createLinearGradient(0, H * 0.80, 0, H);
+      bg.addColorStop(0, 'rgba(6,10,18,0)');
+      bg.addColorStop(1, `rgba(6,10,18,${botAlpha})`);
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, H * 0.80, W, H * 0.20);
+      return;
+    }
+
     const g = ctx.createLinearGradient(0, 0, 0, H);
     g.addColorStop(0, biome.bgTop);
     g.addColorStop(0.55, biome.bgMid);
@@ -1136,6 +1424,34 @@ export class Painter3D {
       ctx.fillText(`YOU ${youPct}%   vs   👻 ${ghostPct}%`, cx, gy0 + Math.round(badgeH * 0.69), badgeW * 0.92);
     }
 
+    // Floating +1 / ★ +3 score pops above recently eaten apples
+    const eatEvents = frame.eatEvents || [];
+    if (eatEvents.length) {
+      ctx.font = `900 ${Math.round(unit * 0.036)}px ui-monospace, monospace`;
+      ctx.lineWidth = Math.max(3, Math.round(unit * 0.005));
+      for (let e = eatEvents.length - 1; e >= 0; e--) {
+        const ev = eatEvents[e];
+        if (ev.ms > ms) continue;
+        const age = ms - ev.ms;
+        if (age > 480) break;
+        if (ev.cell === undefined || ev.cell < 0) continue;
+        const pNorm = age / 480;
+        this._projVec.set(this._cellX(ev.cell), 0.78 + pNorm * 0.68, this._cellZ(ev.cell));
+        this._projVec.project(this.camera);
+        if (this._projVec.z > 1) continue;
+        const sx = (this._projVec.x * 0.5 + 0.5) * W;
+        const sy = (-this._projVec.y * 0.5 + 0.5) * H;
+        const label = ev.golden ? '★ +3' : '+1';
+        ctx.save();
+        ctx.globalAlpha = clamp((1 - pNorm) * 1.35, 0, 1);
+        ctx.strokeStyle = 'rgba(8, 12, 22, 0.85)';
+        ctx.strokeText(label, sx, sy);
+        ctx.fillStyle = ev.golden ? biome.goldCss : '#ffffff';
+        ctx.fillText(label, sx, sy);
+        ctx.restore();
+      }
+    }
+
     // End CTA sub-card when board hits 100% in video capture (positioned safely below top card)
     if (endActive) {
       const ctaH = Math.round(pillH * 0.28);
@@ -1154,52 +1470,22 @@ export class Painter3D {
       ctx.textBaseline = 'alphabetic';
     }
 
-    // Bottom tactile keycap lights (kept comfortably above Shorts bottom caption zone)
-    if (frame.keyLights) {
-      const kw = Math.round(vertical ? W * 0.072 : Math.min(W * 0.05, 58));
-      const gap = Math.round(kw * 0.22);
-      const kcx = cx;
-      const ky = Math.round(vertical ? H * 0.825 : H * 0.90);
-      const keys = [
-        ['up', '▲', kcx - kw / 2, ky - kw - gap],
-        ['left', '◀', kcx - kw * 1.5 - gap, ky],
-        ['down', '▼', kcx - kw / 2, ky],
-        ['right', '▶', kcx + kw * 0.5 + gap, ky],
-      ];
-      for (const [dir, sym, kx, kyy] of keys) {
-        const lit = frame.keyLights[dir] || 0;
-        ctx.fillStyle = lit > 0.05 ? biome.accentCss : biome.hudCard;
-        ctx.strokeStyle = lit > 0.05 ? biome.accentBrightCss : 'rgba(255,255,255,0.18)';
-        ctx.lineWidth = Math.max(1.5, kw * 0.04);
-        ctx.beginPath();
-        ctx.roundRect(kx, kyy, kw, kw, kw * 0.24);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = lit > 0.05 ? '#06110b' : biome.hudMuted;
-        ctx.font = `800 ${Math.round(kw * 0.44)}px ui-sans-serif, system-ui, sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(sym, kx + kw / 2, kyy + kw / 2 + 1);
-      }
-      ctx.textBaseline = 'alphabetic';
-    }
-
     ctx.restore();
   }
 
   keyRects() {
     const W = this.c.width, H = this.c.height;
     const vertical = H > W * 1.2;
-    const kw = Math.round(vertical ? W * 0.072 : Math.min(W * 0.05, 58));
-    const gap = Math.round(kw * 0.22);
-    const kcx = W / 2;
-    const ky = Math.round(vertical ? H * 0.825 : H * 0.90);
-    return [
-      [0, kcx - kw / 2, ky - kw - gap, kw],
-      [1, kcx + kw * 0.5 + gap, ky, kw],
-      [2, kcx - kw / 2, ky, kw],
-      [3, kcx - kw * 1.5 - gap, ky, kw],
-    ];
+    const kw = Math.max(26, Math.round(vertical ? W * 0.088 : Math.min(W * 0.06, 64)));
+    this.camera.updateMatrixWorld();
+    const out = [];
+    for (const cap of this.keyCaps || []) {
+      this._projVec.copy(cap.worldPos).project(this.camera);
+      const px = (this._projVec.x * 0.5 + 0.5) * W;
+      const py = (-this._projVec.y * 0.5 + 0.5) * H;
+      out.push([cap.dir, px - kw / 2, py - kw / 2, kw]);
+    }
+    return out;
   }
 
   keyAt(cx, cy) {
@@ -1211,8 +1497,8 @@ export class Painter3D {
   }
 
   /**
-   * Renders the full 3D arena + actors into WebGL, composites onto the main 2D
-   * canvas over the studio backdrop, and draws crisp vector HUD overlays.
+   * Renders the full 3D arena + actors + 3D macro-pad into WebGL, composites onto the
+   * main 2D canvas over the studio tabletop plate with optical bloom and vector HUD.
    */
   paint(frame) {
     if (this._disposed) return;
@@ -1234,6 +1520,7 @@ export class Painter3D {
     this._updateMoversAndShatter(frame, ms);
     this._updateSparks(frame, ms);
     this._updateGhost(frame);
+    this._updateKeycapCluster(frame);
     this._updateCamera(frame, W, H, nmFactor, ms);
 
     this.webgl.render(this.scene, this.camera);
@@ -1241,12 +1528,23 @@ export class Painter3D {
     this.ctx.direction = 'ltr';
     this._drawBackdrop(W, H);
     this.ctx.drawImage(this.glCanvas, 0, 0, W, H);
+    if (this._bloomCtx && this._bloomCanvas.width > 0) {
+      const bw = this._bloomCanvas.width, bh = this._bloomCanvas.height;
+      this._bloomCtx.clearRect(0, 0, bw, bh);
+      this._bloomCtx.drawImage(this.glCanvas, 0, 0, bw, bh);
+      this.ctx.save();
+      this.ctx.globalCompositeOperation = 'screen';
+      this.ctx.globalAlpha = this.biome.light ? 0.09 : 0.18;
+      this.ctx.drawImage(this._bloomCanvas, 0, 0, W, H);
+      this.ctx.restore();
+    }
     this._drawHudAndKeys(W, H, frame, nmFactor);
   }
 
   dispose() {
     if (this._disposed) return;
     this._disposed = true;
+    this._envRT?.dispose();
     this.webgl.dispose();
   }
 }
@@ -1276,7 +1574,11 @@ export class Renderer3D {
       const prevApple = g.apple;
       const ev = g.step(this.dirs[i]);
       this.snaps.push(g.snake.slice());
-      this.apples.push({ cell: g.apple, golden: g.appleGolden });
+      this.apples.push(
+        g.snake.length >= g.capacity
+          ? { cell: -1, golden: false }
+          : { cell: g.apple, golden: g.appleGolden }
+      );
       this.moversGone.push(g.moversGone);
       if (ev && ev.ate) {
         this.eatEvents.push({
@@ -1348,6 +1650,7 @@ export class Renderer3D {
       moversGone: this.moversGone[i],
       len: base.length,
       ms,
+      clipStartMs: this.log.clipStartMs ?? 0,
       keyLights: this.keyLights(ms),
       hook: this.hook,
       endHook: this.endHook,
