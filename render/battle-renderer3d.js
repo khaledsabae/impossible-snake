@@ -4,6 +4,7 @@
 
 import * as THREE from '../vendor/three.module.js';
 import { BattleGame, COLORS } from '../core/battle.js';
+import { MegaBattleGame, MEGA_COLORS } from '../core/mega-battle.js';
 import { NO_KEYS } from './renderer.js';
 import {
   BIOMES_3D,
@@ -41,6 +42,7 @@ export class BattlePainter3D {
     this.ctx = canvas.getContext('2d');
     this.w = opts.width || 18;
     this.h = opts.height || 18;
+    this.colors = (opts.colors && opts.colors.length) ? opts.colors : COLORS;
     this.showKeys = Boolean(opts.showKeys);
     this.playerColor = opts.playerColor ?? null;
     const biomeKey = opts.biome && BIOMES_3D[opts.biome] ? opts.biome : 'colosseum';
@@ -96,12 +98,13 @@ export class BattlePainter3D {
 
     if (this.showKeys) {
       const pIdx = this.playerColor ?? 2;
-      const accentHex = parseInt(COLORS[pIdx].bodyA.slice(1), 16);
+      const pCol = this.colors[pIdx] || this.colors[0];
+      const accentHex = parseInt(pCol.bodyA.slice(1), 16);
       const pad = buildKeycapCluster(this.scene, this.w, this.h, this.biome.plinthColor, accentHex, this.biome.light);
       this.keyPadGroup = pad.keyPadGroup;
       this.keyCaps = pad.keyCaps;
       this._keyBaseColor = pad.keyBaseColor;
-      this._keyActiveColor = new THREE.Color(COLORS[pIdx].bodyA);
+      this._keyActiveColor = new THREE.Color(pCol.bodyA);
       this._keyLegendRest = new THREE.Color(0xcbd5e1);
       this._keyLegendHot = new THREE.Color(0xffffff);
     } else {
@@ -191,7 +194,8 @@ export class BattlePainter3D {
     slab.receiveShadow = true;
     this.scene.add(slab);
 
-    const rimColor = this.playerColor !== null ? parseInt(COLORS[this.playerColor].bodyA.slice(1), 16) : b.frameColor;
+    const pColorDef = this.colors[this.playerColor] || this.colors[0];
+    const rimColor = this.playerColor !== null ? parseInt(pColorDef.bodyA.slice(1), 16) : b.frameColor;
     this.rimBaseColor = new THREE.Color(rimColor);
     this.rimMat = new THREE.MeshStandardMaterial({
       color: rimColor,
@@ -303,7 +307,7 @@ export class BattlePainter3D {
     const pupilGeo = new THREE.SphereGeometry(0.082, 10, 8);
     const pupilMat = new THREE.MeshStandardMaterial({ color: 0x090d14, roughness: 0.1 });
 
-    this.headActors = COLORS.map((col) => {
+    this.headActors = this.colors.map((col) => {
       const grp = new THREE.Group();
       const headTint = new THREE.Color(col.head).lerp(new THREE.Color(col.bodyA), 0.30);
       const mat = new THREE.MeshPhysicalMaterial({
@@ -463,8 +467,9 @@ export class BattlePainter3D {
         this.rimMat.emissive.set(winCol.bodyA);
         this.rimMat.emissiveIntensity = 0.72;
       } else if (activeElim) {
-        this.rimMat.color.set(COLORS[activeElim.id].bodyA);
-        this.rimMat.emissive.set(COLORS[activeElim.id].bodyA);
+        const eCol = this.colors[activeElim.id] || this.colors[0];
+        this.rimMat.color.set(eCol.bodyA);
+        this.rimMat.emissive.set(eCol.bodyA);
         this.rimMat.emissiveIntensity = 0.65;
       } else {
         this.rimMat.color.copy(this.rimBaseColor);
@@ -545,7 +550,7 @@ export class BattlePainter3D {
     let leaderHeadPos = null;
     const winAge = isWon && winMs !== null ? Math.max(0, ms - winMs) : -1;
 
-    for (let sId = 0; sId < 4; sId++) {
+    for (let sId = 0; sId < this.colors.length; sId++) {
       const sBase = snakes[sId];
       const sNext = nextSnakes[sId] || sBase;
       const headActor = this.headActors[sId];
@@ -557,7 +562,7 @@ export class BattlePainter3D {
       const base = sBase.cells;
       const target = sNext.alive ? sNext.cells : base;
       const n = base.length;
-      const colDef = COLORS[sId];
+      const colDef = this.colors[sId];
       this._cHead.set(colDef.head);
       this._cBodyA.set(colDef.bodyA);
       this._cBodyB.set(colDef.bodyB);
@@ -767,7 +772,7 @@ export class BattlePainter3D {
       const t = age / 980;
       const cells = (el.droppedCells && el.droppedCells.length) ? el.droppedCells : (el.cell >= 0 ? [el.cell] : []);
       const stride = Math.max(1, Math.ceil((cells.length * 3) / Math.max(3, MAX_SHARDS - shardIdx)));
-      this._cBodyA.set(COLORS[el.id]?.bodyA || '#ff4d5a');
+      this._cBodyA.set(this.colors[el.id]?.bodyA || '#ff4d5a');
 
       for (let i = 0; i < cells.length && shardIdx < MAX_SHARDS; i += stride) {
         const ox = this._cellX(cells[i]), oz = this._cellZ(cells[i]);
@@ -839,7 +844,8 @@ export class BattlePainter3D {
     const elev = THREE.MathUtils.degToRad(vertical ? 50 : 54);
     const tanHalfY = Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2);
     const minDistHoriz = spanX / (2 * tanHalfY * Math.max(0.42, aspect) * (vertical ? 0.90 : 0.76));
-    const minDistVert = (spanZ * Math.sin(elev) + 1.55) / (2 * tanHalfY * (vertical ? 0.62 : 0.78));
+    const vertFill = vertical ? (this.colors.length > 4 ? 0.56 : 0.62) : 0.78;
+    const minDistVert = (spanZ * Math.sin(elev) + 1.55) / (2 * tanHalfY * vertFill);
     let dist = Math.max(minDistHoriz, minDistVert);
 
     const heroIntro = ms < 750 ? Math.pow(1 - clamp(ms / 750, 0, 1), 3) : 0;
@@ -875,12 +881,14 @@ export class BattlePainter3D {
   }
 
   _drawBattleHud(W, H, frame, activeElim, isWon, winCol, winMs, ms) {
-    const { ctx, biome } = this;
+    const { ctx, biome, colors } = this;
     const vertical = H > W * 1.2;
     const snakes = frame.snakes || [];
     const apples = frame.apples || [];
     const shrinkImminent = Boolean(frame.shrinkImminent);
     const ticksToShrink = frame.ticksToShrink ?? 99;
+    const nColors = colors.length;
+    const isMega = nColors > 4;
     const unit = vertical ? W : Math.min(W, H);
     const cxm = W / 2;
 
@@ -889,13 +897,18 @@ export class BattlePainter3D {
 
     ctx.save();
     // 1. Top Hook / Slow-Mo / Champion Banner
-    const pillW = Math.round(vertical ? W * 0.88 : Math.min(W * 0.56, 560));
-    const pillH = Math.round(vertical ? unit * 0.125 : unit * 0.115);
+    const pillW = Math.round(vertical ? W * 0.90 : Math.min(W * 0.56, 560));
+    const pillH = Math.round(vertical ? unit * (isMega ? 0.112 : 0.125) : unit * 0.110);
     const px = Math.round((W - pillW) / 2);
-    const py = Math.round(vertical ? Math.min(H * 0.068, Math.max(16, boardTopY - pillH * 2.15)) : H * 0.024);
+    const rows = Math.ceil(nColors / 4);
+    const cardH = Math.round(vertical ? H * (rows > 1 ? 0.041 : 0.056) : H * (rows > 1 ? 0.050 : 0.064));
+    const rowGap = Math.round(cardH * 0.15);
+    const totalCardsH = rows * cardH + Math.max(0, rows - 1) * rowGap;
+    const py = Math.round(vertical ? Math.min(H * 0.055, Math.max(14, boardTopY - totalCardsH - pillH - unit * 0.036)) : H * 0.022);
 
+    const activeElimCol = activeElim ? (colors[activeElim.id] || colors[0]) : null;
     ctx.fillStyle = biome.hudCard;
-    ctx.strokeStyle = isWon ? winCol.bodyA : (activeElim ? COLORS[activeElim.id].bodyA : biome.hudBorder);
+    ctx.strokeStyle = isWon ? winCol.bodyA : (activeElimCol ? activeElimCol.bodyA : biome.hudBorder);
     ctx.lineWidth = Math.max(2, Math.round(unit * 0.004));
     ctx.beginPath();
     ctx.roundRect(px, py, pillW, pillH, Math.round(pillH * 0.24));
@@ -903,29 +916,29 @@ export class BattlePainter3D {
     ctx.stroke();
 
     ctx.textAlign = 'center';
+    const alive = snakes.filter((s) => s.alive);
     let topSub = 'WHICH COLOR TAKES THE CROWN?';
     let topSubCol = biome.goldCss;
-    let topMain = `${snakes.filter((s) => s.alive).length} COLORS REMAINING`;
+    let topMain = isMega ? `${alive.length} / ${nColors} SNAKES ALIVE` : `${alive.length} COLORS REMAINING`;
     let topMainCol = biome.hudText;
 
-    const alive = snakes.filter((s) => s.alive);
     if (this.playerColor !== null && snakes[this.playerColor] && !snakes[this.playerColor].alive && !isWon) {
       topSub = 'ELIMINATED · RESOLVING FINAL DUEL';
       topSubCol = '#fb7185';
       topMain = alive.length === 2 ? `${alive[0].name} VS ${alive[1].name}` : `${alive.length} REMAINING`;
     } else if (ms <= 2800) {
-      topSub = '4-COLOR ARENA · LAST SNAKE STANDING';
+      topSub = isMega ? '8-SNAKE CHAOS ROYALE · LAST SNAKE STANDING' : '4-COLOR ARENA · LAST SNAKE STANDING';
       topSubCol = biome.goldCss;
-      topMain = this.playerColor !== null ? `YOU ARE ${COLORS[this.playerColor].name}` : 'PICK YOUR COLOR';
+      topMain = this.playerColor !== null ? `YOU ARE ${colors[this.playerColor].name}` : 'PICK YOUR COLOR';
     } else if (isWon) {
       topSub = 'CHAMPION CROWNED · DID YOUR COLOR WIN?';
       topSubCol = winCol.bodyA;
       topMain = `${winCol.name} WINS! 🏆`;
     } else if (activeElim) {
-      topSub = '⚡ 2.5× SLOW-MOTION REPLAY';
+      topSub = '⚡ SLOW-MOTION KNOCKOUT';
       topSubCol = biome.goldCss;
       topMain = `${activeElim.name} ELIMINATED!`;
-      topMainCol = COLORS[activeElim.id].head;
+      topMainCol = activeElimCol.head;
     } else if (shrinkImminent) {
       topSub = '⚠ PERIMETER CLOSING IN';
       topSubCol = '#fb7185';
@@ -942,74 +955,78 @@ export class BattlePainter3D {
     ctx.fillStyle = topMainCol;
     ctx.fillText(topMain, cxm, py + Math.round(pillH * 0.80), pillW * 0.90);
 
-    // 2. 4-Color Scoreboard Cards directly above 3D Arena
-    const boardSpanPx = Math.round(vertical ? W * 0.90 : Math.min(W * 0.72, 640));
+    // 2. N-Color Scoreboard Cards (1 row for 4 colors, 2 rows for 8 colors)
+    const boardSpanPx = Math.round(vertical ? W * 0.90 : Math.min(W * 0.72, 680));
     const bx = Math.round(cxm - boardSpanPx / 2);
-    const gap = Math.round(boardSpanPx * 0.018);
-    const cardW = Math.floor((boardSpanPx - gap * 3) / 4);
-    const cardH = Math.round(vertical ? H * 0.056 : H * 0.064);
-    const minCardY = py + pillH + Math.round(unit * 0.014);
-    const cardY = Math.max(minCardY, Math.round(boardTopY - cardH - Math.round(unit * 0.016)));
+    const gap = Math.round(boardSpanPx * 0.016);
+    const colsPerRow = Math.min(4, nColors);
+    const cardW = Math.floor((boardSpanPx - gap * (colsPerRow - 1)) / colsPerRow);
+    const minCardY = py + pillH + Math.round(unit * 0.012);
+    const cardY = Math.max(minCardY, Math.round(boardTopY - totalCardsH - Math.round(unit * 0.014)));
 
     let maxLen = 0;
     for (const s of snakes) if (s.alive && s.cells.length > maxLen) maxLen = s.cells.length;
 
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < nColors; i++) {
       const s = snakes[i] || { alive: false, cells: [] };
-      const col = COLORS[i];
-      const x = bx + i * (cardW + gap);
+      const col = colors[i];
+      const rowIdx = Math.floor(i / 4);
+      const colIdx = i % 4;
+      const x = bx + colIdx * (cardW + gap);
+      const y = cardY + rowIdx * (cardH + rowGap);
       const isPlayer = i === this.playerColor;
       const isLeader = s.alive && s.cells.length === maxLen;
 
       ctx.save();
-      ctx.globalAlpha = s.alive ? 1 : 0.40;
+      ctx.globalAlpha = s.alive ? 1 : 0.36;
       ctx.fillStyle = biome.hudCard;
       ctx.beginPath();
-      ctx.roundRect(x, cardY, cardW, cardH, 12);
+      ctx.roundRect(x, y, cardW, cardH, rows > 1 ? 10 : 12);
       ctx.fill();
       ctx.strokeStyle = isPlayer ? col.bodyA : (isLeader ? '#ffc93c' : 'rgba(148, 163, 184, 0.25)');
       ctx.lineWidth = isPlayer || isLeader ? 2.5 : 1.2;
       ctx.beginPath();
-      ctx.roundRect(x, cardY, cardW, cardH, 12);
+      ctx.roundRect(x, y, cardW, cardH, rows > 1 ? 10 : 12);
       ctx.stroke();
 
       ctx.fillStyle = col.bodyA;
       ctx.beginPath();
-      ctx.roundRect(x + 8, cardY + 10, 7, cardH - 20, 4);
+      ctx.roundRect(x + 7, y + 8, 6, cardH - 16, 3);
       ctx.fill();
 
       ctx.textAlign = 'left';
       ctx.fillStyle = isPlayer ? col.head : biome.hudMuted;
-      ctx.font = `800 ${Math.round(cardH * 0.24)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.font = `800 ${Math.round(cardH * 0.26)}px ui-sans-serif, system-ui, sans-serif`;
       const tag = isPlayer ? `${col.name} (YOU)` : (isLeader ? `${col.name} 👑` : col.name);
-      ctx.fillText(tag, x + 21, cardY + Math.round(cardH * 0.39), cardW - 26);
+      ctx.fillText(tag, x + 19, y + Math.round(cardH * 0.40), cardW - 24);
 
       ctx.fillStyle = s.alive ? biome.hudText : '#fb7185';
       ctx.font = `800 ${Math.round(cardH * 0.40)}px ui-monospace, monospace`;
-      ctx.fillText(s.alive ? String(s.cells.length) : 'OUT', x + 21, cardY + Math.round(cardH * 0.82), cardW - 26);
+      ctx.fillText(s.alive ? String(s.cells.length) : 'OUT', x + 19, y + Math.round(cardH * 0.83), cardW - 24);
       ctx.restore();
     }
 
-    // 3. Relative 4-Color Power Bar & Elimination Feed below board (in capture mode without 3D keypads)
+    // 3. Power Bar, Live Kill Feed & Viral Voiceover Captions below board (capture / no-keys mode)
     if (!this.showKeys) {
       const totalLen = alive.reduce((acc, s) => acc + s.cells.length, 0) || 1;
-      const barY = Math.min(Math.round(H * 0.845), Math.round(boardBotY + Math.round(unit * 0.022)));
-      const barH = Math.max(12, Math.round(unit * 0.020));
+      const barY = Math.min(Math.round(H * 0.775), Math.round(boardBotY + Math.round(unit * 0.018)));
+      const barH = Math.max(10, Math.round(unit * 0.018));
       let curX = bx;
       for (let k = 0; k < alive.length; k++) {
         const s = alive[k];
         const w = k === alive.length - 1 ? (bx + boardSpanPx - curX) : Math.round((s.cells.length / totalLen) * boardSpanPx);
-        ctx.fillStyle = COLORS[s.id].bodyA;
+        ctx.fillStyle = colors[s.id].bodyA;
         ctx.beginPath();
-        ctx.roundRect(curX, barY, Math.max(6, w - 3), barH, barH / 2);
+        ctx.roundRect(curX, barY, Math.max(5, w - 3), barH, barH / 2);
         ctx.fill();
         curX += w;
       }
 
-      const feedY = barY + barH + Math.round(unit * 0.055);
+      const feedEl = frame.latestElim || activeElim;
+      const feedY = barY + barH + Math.round(unit * 0.044);
       const feedH = Math.round(pillH * 0.34);
       ctx.fillStyle = biome.hudCard;
-      ctx.strokeStyle = isWon ? winCol.bodyA : biome.hudBorder;
+      ctx.strokeStyle = isWon ? winCol.bodyA : (feedEl ? (colors[feedEl.id]?.bodyA || biome.hudBorder) : biome.hudBorder);
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.roundRect(bx, feedY - feedH / 2, boardSpanPx, feedH, feedH / 2);
@@ -1018,17 +1035,34 @@ export class BattlePainter3D {
 
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = `800 ${Math.round(unit * 0.026)}px ui-monospace, monospace`;
+      ctx.font = `800 ${Math.round(unit * 0.025)}px ui-monospace, monospace`;
       if (isWon) {
         ctx.fillStyle = biome.goldCss;
-        ctx.fillText(`FINAL LENGTH: ${frame.winnerLength ?? alive[0]?.cells.length ?? 0} SQUARES · COMMENT YOUR COLOR`, cxm, feedY + 1, boardSpanPx * 0.92);
-      } else if (activeElim) {
+        ctx.fillText(`CHAMPION LENGTH: ${frame.winnerLength ?? alive[0]?.cells.length ?? 0} SQUARES · PICK NEXT ROUND`, cxm, feedY + 1, boardSpanPx * 0.92);
+      } else if (feedEl) {
         ctx.fillStyle = biome.hudText;
-        const byWho = activeElim.killerName ? `CUT OFF BY ${activeElim.killerName}` : 'CRASHED INTO PERIMETER';
-        ctx.fillText(`${byWho} · GOLDEN LOOT APPLES DROPPED (${apples.length})`, cxm, feedY + 1, boardSpanPx * 0.92);
+        const leftTxt = feedEl.remainingCount !== undefined ? ` · ${feedEl.remainingCount} LEFT` : ` · GOLDEN LOOT DROPPED`;
+        const byWho = feedEl.killerName ? `${feedEl.killerName} KNOCKED OUT ${feedEl.name}` : `${feedEl.name} HIT ${feedEl.cause || 'PERIMETER'}`;
+        ctx.fillText(`${byWho}${leftTxt}`, cxm, feedY + 1, boardSpanPx * 0.92);
       } else {
         ctx.fillStyle = biome.hudMuted;
-        ctx.fillText('EVERY ELIMINATION DROPS GOLDEN LOOT APPLES', cxm, feedY + 1, boardSpanPx * 0.92);
+        ctx.fillText(isMega ? '8 SNAKES · SHRINKING WALLS · GOLDEN LOOT ON EVERY KO' : 'EVERY ELIMINATION DROPS GOLDEN LOOT APPLES', cxm, feedY + 1, boardSpanPx * 0.92);
+      }
+
+      // Bold animated broadcast caption driven by TTS word boundary timestamps
+      if (frame.caption && frame.caption.text) {
+        const capText = String(frame.caption.text).toUpperCase();
+        const capY = vertical
+          ? Math.min(Math.round(H * 0.875), Math.round(feedY + feedH * 1.45))
+          : Math.round(H * 0.89);
+        const capSize = Math.round(vertical ? unit * 0.058 : unit * 0.052);
+        ctx.font = `900 ${capSize}px ui-sans-serif, system-ui, sans-serif`;
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = Math.max(8, Math.round(capSize * 0.24));
+        ctx.strokeStyle = 'rgba(4, 6, 12, 0.94)';
+        ctx.strokeText(capText, cxm, capY, W * 0.88);
+        ctx.fillStyle = frame.caption.accent || '#ffffff';
+        ctx.fillText(capText, cxm, capY, W * 0.88);
       }
       ctx.textBaseline = 'alphabetic';
     }
@@ -1063,7 +1097,7 @@ export class BattlePainter3D {
     const ms = frame.ms ?? 0;
     const winMs = frame.winMs ?? null;
     const isWon = winMs !== null && ms >= winMs;
-    const winCol = COLORS[frame.winner ?? 0] || COLORS[0];
+    const winCol = this.colors[frame.winner ?? 0] || this.colors[0];
 
     let activeElim = null;
     for (const el of frame.elimEvents || []) {
@@ -1094,7 +1128,7 @@ export class BattlePainter3D {
       this.ctx.drawImage(this._bloomCanvas, 0, 0, W, H);
       this.ctx.restore();
     }
-    this._drawBattleHud(W, H, frame, activeElim, isWon, winCol, winMs, ms);
+    if (!frame.hideHud) this._drawBattleHud(W, H, frame, activeElim, isWon, winCol, winMs, ms);
   }
 
   dispose() {
@@ -1111,14 +1145,18 @@ export class BattlePainter3D {
 }
 
 /**
- * Replays a recorded 4-Color Battle log deterministically through core/battle.js
- * and drives BattlePainter3D for offline video capture.
+ * Replays a recorded 4-Color or 8-Snake Battle log deterministically and drives
+ * BattlePainter3D for offline video capture.
  */
 export class BattleRenderer3D {
   constructor(canvas, log, opts = {}) {
     this.log = log;
-    this.w = log.width || 18;
-    this.h = log.height || 18;
+    this.opts = opts;
+    const isMega = log.mode === 'mega_battle' || (log.colors && log.colors.length > 4);
+    this.colors = (log.colors && log.colors.length) ? log.colors : (isMega ? MEGA_COLORS : COLORS);
+    this.w = log.width || (isMega ? 22 : 18);
+    this.h = log.height || (isMega ? 22 : 18);
+    this.captions = Array.isArray(log.captions) ? log.captions : [];
     this.replay();
     this.painter = new BattlePainter3D(canvas, {
       width: this.w,
@@ -1126,6 +1164,7 @@ export class BattleRenderer3D {
       biome: opts.biome || log.biome || 'colosseum',
       showKeys: false,
       playerColor: null,
+      colors: this.colors,
     });
   }
 
@@ -1134,7 +1173,9 @@ export class BattleRenderer3D {
   }
 
   replay() {
-    const g = new BattleGame(this.log.seed, {
+    const isMega = this.log.mode === 'mega_battle' || this.colors.length > 4;
+    const GameCls = this.opts.gameCtor || (isMega ? MegaBattleGame : BattleGame);
+    const g = new GameCls(this.log.seed, {
       width: this.w,
       height: this.h,
       targetApples: this.log.targetApples,
@@ -1184,7 +1225,7 @@ export class BattleRenderer3D {
     }
 
     this.winMs = this.log.winMs ?? this.log.tickStartMs[this.log.tickStartMs.length - 1];
-    this.verified = g.winner !== null && g.winner === this.log.winner && g.eliminations.length === 3;
+    this.verified = g.winner !== null && g.winner === this.log.winner && g.eliminations.length === this.colors.length - 1;
   }
 
   tickAt(ms) {
@@ -1204,6 +1245,14 @@ export class BattleRenderer3D {
     const { i, f } = this.tickAt(ms);
     const cur = this.snaps[i];
     const nxt = this.snaps[Math.min(i + 1, this.snaps.length - 1)];
+    let latestElim = null;
+    for (const el of this.elimEvents) {
+      if (ms >= el.ms - 100 && ms <= el.ms + 1850) latestElim = el;
+    }
+    let caption = null;
+    for (const c of this.captions) {
+      if (ms >= c.startMs && ms <= c.endMs) { caption = c; break; }
+    }
     this.painter.paint({
       snakes: cur.snakes,
       nextSnakes: nxt.snakes,
@@ -1215,6 +1264,8 @@ export class BattleRenderer3D {
       ticksToShrink: cur.ticksToShrink,
       eatEvents: this.eatEvents,
       elimEvents: this.elimEvents,
+      latestElim,
+      caption,
       winner: this.log.winner,
       winnerLength: this.log.winnerLength,
       winMs: this.winMs,
